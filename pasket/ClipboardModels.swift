@@ -84,6 +84,11 @@ nonisolated struct ClipboardItem: Identifiable, Codable, Sendable {
     var fingerprint: String
     var image: ClipboardImage?
     var files: [ClipboardFile] = []
+    var imageTextMatch: String? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, title, content, source, copiedAt, fingerprint, image, files
+    }
 
     var textByteCount: Int { [.text, .link, .email].contains(kind) ? content.utf8.count : 0 }
     var imageByteCount: Int { image.map { $0.byteCount + $0.thumbnailByteCount } ?? 0 }

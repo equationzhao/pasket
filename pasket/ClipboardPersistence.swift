@@ -149,14 +149,51 @@ actor ClipboardPersistence {
 
     func item(_ id: UUID) throws -> ClipboardItem? { try item(id, in: openDatabase()) }
 
-    func page(query: String = "", filter: ClipboardFilter = .all, limit: Int = 50, offset: Int = 0,
-              level: ClipboardSearch.Level = .fuzzy) throws -> ClipboardPage {
+    func unrecognizedImages(limit: Int) throws -> [ClipboardItem] {
         let database = try openDatabase()
-        let (clause, values, ordering) = try resultQuery(query, filter: filter, level: level, in: database)
         var items: [ClipboardItem] = []
-        try database.query("SELECT summary FROM items" + clause + " ORDER BY " + ordering + " LIMIT ? OFFSET ?",
-                           values + [.integer(max(0, limit)), .integer(max(0, offset))]) {
+        try database.query("""
+            SELECT payload FROM items WHERE kind = 'image' AND image_name LIKE '%.png' AND image_text IS NULL
+            ORDER BY copied_at DESC, position DESC, id LIMIT ?
+            """, [.integer(limit)]) {
             items.append(try JSONDecoder().decode(ClipboardItem.self, from: ClipboardDatabase.data($0, 0)))
+        }
+        return items
+    }
+
+    func imageText(for id: UUID, image: ClipboardImage) throws -> String? {
+        let database = try openDatabase()
+        var text: String?
+        try database.query("SELECT image_text FROM items WHERE id = ? AND image_name = ? AND image_text IS NOT NULL",
+                           [.text(id.uuidString), .text(image.fileName)]) {
+            text = ClipboardDatabase.text($0, 0)
+        }
+        return text
+    }
+
+    func saveImageText(_ text: String, for id: UUID, image: ClipboardImage) throws {
+        try Task.checkCancellation()
+        let database = try openDatabase()
+        try database.execute("UPDATE items SET image_text = ? WHERE id = ? AND image_name = ? AND image_text IS NULL",
+                             [.text(text), .text(id.uuidString), .text(image.fileName)])
+    }
+
+    func clearImageText() throws {
+        let database = try openDatabase()
+        try database.execute("PRAGMA secure_delete = ON")
+        try database.execute("UPDATE items SET image_text = NULL WHERE image_text IS NOT NULL")
+    }
+
+    func page(query: String = "", filter: ClipboardFilter = .all, limit: Int = 50, offset: Int = 0,
+              level: ClipboardSearch.Level = .fuzzy, includesImageText: Bool = false) throws -> ClipboardPage {
+        let database = try openDatabase()
+        let search = ClipboardSearch(query, level: level)
+        let imageText = includesImageText && !search.isEmpty ? "image_text" : "NULL"
+        let (clause, values, ordering) = try resultQuery(search, filter: filter, imageText: imageText, in: database)
+        var items: [ClipboardItem] = []
+        try database.query("SELECT summary, \(imageText) FROM items" + clause + " ORDER BY " + ordering + " LIMIT ? OFFSET ?",
+                           values + [.integer(max(0, limit)), .integer(max(0, offset))]) {
+            items.append(try decodeSummary($0, search: search))
         }
         return ClipboardPage(items: items, matchingCount: try database.integer("SELECT COUNT(*) FROM items" + clause, values),
                              totalCount: try database.integer("SELECT COUNT(*) FROM items"),
@@ -166,7 +203,8 @@ actor ClipboardPersistence {
 
     // Index and summaries are read in one actor turn, using exactly the same ranking as pages.
     func resultSnapshot(query: String, filter: ClipboardFilter, limit: Int,
-                        retainingIDs: Set<UUID> = [], level: ClipboardSearch.Level = .fuzzy) throws -> ClipboardResultSnapshot {
+                        retainingIDs: Set<UUID> = [], level: ClipboardSearch.Level = .fuzzy,
+                        includesImageText: Bool = false) throws -> ClipboardResultSnapshot {
         let signposter = HistoryPerformance.signposter
         let interval = signposter.beginInterval("History Result Snapshot", id: signposter.makeSignpostID())
         var references: [ClipboardHistoryReference] = []
@@ -178,7 +216,9 @@ actor ClipboardPersistence {
                                    "count=\(references.count, privacy: .public) status=\(status, privacy: .public)")
         }
         let database = try openDatabase()
-        let (clause, values, ordering) = try resultQuery(query, filter: filter, level: level, in: database)
+        let search = ClipboardSearch(query, level: level)
+        let imageText = includesImageText && !search.isEmpty ? "image_text" : "NULL"
+        let (clause, values, ordering) = try resultQuery(search, filter: filter, imageText: imageText, in: database)
         try database.query("SELECT id, copied_at FROM items" + clause + " ORDER BY " + ordering, values) { row in
             try Task.checkCancellation()
             guard let id = UUID(uuidString: ClipboardDatabase.text(row, 0)) else {
@@ -194,9 +234,9 @@ actor ClipboardPersistence {
         for start in stride(from: 0, to: requested.count, by: 500) {
             let ids = requested[start..<min(start + 500, requested.count)]
             let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
-            try database.query("SELECT summary FROM items WHERE id IN (" + placeholders + ")",
+            try database.query("SELECT summary, \(imageText) FROM items WHERE id IN (" + placeholders + ")",
                                ids.map { .text($0.uuidString) }) { row in
-                let item = try JSONDecoder().decode(ClipboardItem.self, from: ClipboardDatabase.data(row, 0))
+                let item = try decodeSummary(row, search: search)
                 summaries[item.id] = item
             }
         }
@@ -208,20 +248,29 @@ actor ClipboardPersistence {
         return ClipboardResultSnapshot(references: references, page: page)
     }
 
-    private func resultQuery(_ query: String, filter: ClipboardFilter, level: ClipboardSearch.Level,
+    private func decodeSummary(_ row: OpaquePointer, search: ClipboardSearch) throws -> ClipboardItem {
+        var item = try JSONDecoder().decode(ClipboardItem.self, from: ClipboardDatabase.data(row, 0))
+        let text = ClipboardDatabase.text(row, 1)
+        if !text.isEmpty, ClipboardSearch(search.query, level: .literal).rank(item) == 0 {
+            item.imageTextMatch = search.imageTextSnippet(text)
+        }
+        return item
+    }
+
+    private func resultQuery(_ search: ClipboardSearch, filter: ClipboardFilter, imageText: String,
                              in database: ClipboardDatabase)
         throws -> (String, [ClipboardDatabase.Value], String) {
-        let search = ClipboardSearch(query, level: level)
         var predicates: [String] = []
         var values: [ClipboardDatabase.Value] = []
         if filter == .images { predicates.append("has_image_preview = 1") }
         else if let kind = filter.kind { predicates.append("kind = ?"); values.append(.text(kind.rawValue)) }
+        let rank = "pasket_search_rank(title, content, source_name, source_bundle, \(imageText))"
         if !search.isEmpty {
             try database.setSearch(search)
-            predicates.append("pasket_search_rank(title, content, source_name, source_bundle) > 0")
+            predicates.append(rank + " > 0")
         }
         let clause = predicates.isEmpty ? "" : " WHERE " + predicates.joined(separator: " AND ")
-        let ranking = search.isEmpty ? "" : "pasket_search_rank(title, content, source_name, source_bundle) DESC, "
+        let ranking = search.isEmpty ? "" : rank + " DESC, "
         return (clause, values, ranking + "copied_at DESC, position DESC, id")
     }
 
@@ -248,7 +297,7 @@ actor ClipboardPersistence {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let database = try ClipboardDatabase(url: databaseURL)
         let version = try database.integer("PRAGMA user_version")
-        guard version <= 1 else { throw ClipboardStorageError.unsupportedVersion }
+        guard version <= 2 else { throw ClipboardStorageError.unsupportedVersion }
         guard version >= 0 else { throw ClipboardStorageError.invalidHistory }
         if version == 0 {
             guard try database.integer("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'") == 0 else {
@@ -266,7 +315,8 @@ actor ClipboardPersistence {
                         title TEXT NOT NULL, content TEXT NOT NULL, source_name TEXT NOT NULL, source_bundle TEXT NOT NULL,
                         copied_at REAL NOT NULL, position INTEGER NOT NULL, has_image_preview INTEGER NOT NULL,
                         text_bytes INTEGER NOT NULL, image_bytes INTEGER NOT NULL,
-                        image_name TEXT NOT NULL, thumbnail_name TEXT NOT NULL, summary BLOB NOT NULL, payload BLOB NOT NULL
+                        image_name TEXT NOT NULL, thumbnail_name TEXT NOT NULL, summary BLOB NOT NULL, payload BLOB NOT NULL,
+                        image_text TEXT
                     )
                     """)
                 try database.execute("CREATE INDEX items_recency ON items(copied_at DESC, position DESC, id)")
@@ -275,7 +325,12 @@ actor ClipboardPersistence {
                 for item in history.items.reversed() { try upsert(item, in: database) }
                 try writeSettings(history, in: database)
                 try enforceLimits(in: database)
-                try database.execute("PRAGMA user_version = 1")
+                try database.execute("PRAGMA user_version = 2")
+            }
+        } else if version == 1 {
+            try database.transaction {
+                try database.execute("ALTER TABLE items ADD COLUMN image_text TEXT")
+                try database.execute("PRAGMA user_version = 2")
             }
         }
         // Only collect media after the schema and any legacy import have committed.
@@ -327,12 +382,15 @@ actor ClipboardPersistence {
         summary.content = String(item.content.prefix(500))
         let encoder = JSONEncoder()
         try database.execute("""
-            INSERT INTO items VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO items (id, fingerprint, kind, title, content, source_name, source_bundle, copied_at,
+                position, has_image_preview, text_bytes, image_bytes, image_name, thumbnail_name, summary, payload)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 fingerprint=excluded.fingerprint, kind=excluded.kind, title=excluded.title, content=excluded.content,
                 source_name=excluded.source_name, source_bundle=excluded.source_bundle, copied_at=excluded.copied_at,
                 position=excluded.position, has_image_preview=excluded.has_image_preview,
                 text_bytes=excluded.text_bytes, image_bytes=excluded.image_bytes,
+                image_text=CASE WHEN items.image_name = excluded.image_name THEN items.image_text END,
                 image_name=excluded.image_name, thumbnail_name=excluded.thumbnail_name,
                 summary=excluded.summary, payload=excluded.payload
             """, [.text(item.id.uuidString), .text(item.fingerprint), .text(item.kind.rawValue), .text(item.title), .text(item.content),

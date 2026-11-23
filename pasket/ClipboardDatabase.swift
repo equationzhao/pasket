@@ -29,7 +29,7 @@ nonisolated final class ClipboardDatabase {
     func setSearch(_ search: ClipboardSearch) throws {
         let retained = Unmanaged.passRetained(SearchContext(search)).toOpaque()
         // SQLite owns this query's matcher until the connection closes (also on registration failure).
-        guard sqlite3_create_function_v2(handle, "pasket_search_rank", 4, SQLITE_UTF8, retained, { context, _, values in
+        guard sqlite3_create_function_v2(handle, "pasket_search_rank", 5, SQLITE_UTF8, retained, { context, _, values in
             guard let values else { sqlite3_result_int(context, 0); return }
             guard let data = sqlite3_user_data(context) else { sqlite3_result_int(context, 0); return }
             let search = Unmanaged<SearchContext>.fromOpaque(data).takeUnretainedValue().search
@@ -37,7 +37,9 @@ nonisolated final class ClipboardDatabase {
                 guard let bytes = sqlite3_value_text(value) else { return "" }
                 return String(decoding: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_value_bytes(value))), as: UTF8.self)
             }
-            sqlite3_result_double(context, search.rank(fields: (0..<4).map { string(values[$0]) }))
+            let rank = search.rank(fields: (0..<4).map { string(values[$0]) })
+            let imageRank = search.imageTextRank(string(values[4]))
+            sqlite3_result_double(context, max(rank, imageRank))
         }, nil, nil, { data in
             if let data { Unmanaged<SearchContext>.fromOpaque(data).release() }
         }) == SQLITE_OK else {

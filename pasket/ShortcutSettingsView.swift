@@ -25,6 +25,7 @@ struct ShortcutSettingsView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     generalSection
                     keyboardShortcutsSection
+                    textRecognitionSection
                     historyPanelSection
                     HistoryRetentionSettingsView(store: store, focusedField: $focusedHistoryField)
 
@@ -144,6 +145,21 @@ struct ShortcutSettingsView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .modifier(SettingsCard())
+        }
+    }
+
+    private var textRecognitionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SettingsSectionHeader(title: "Text Recognition")
+            SettingsToggleRow(
+                title: "Search Text in Images",
+                detail: "Recognize text in saved images on this Mac so it can be found in clipboard search.",
+                isOn: Binding(get: { store.searchesImageText }, set: { store.setSearchesImageText($0) }),
+                accessibilityIdentifier: "searchClipboardImageText"
+            )
+            .disabled(store.isLoading || store.isStorageBlocked)
             .padding(12)
             .modifier(SettingsCard())
         }

@@ -509,7 +509,8 @@ struct ContentView: View {
                        isMarked: store.markedIDs.contains(item.id)
                            || (store.markedIDs.isEmpty && store.selectedIDs.count > 1
                                && store.selectedIDs.contains(item.id)),
-                       thumbnail: store.thumbnails[item.id], isUnavailable: store.unavailableItems.contains(item.id))
+                       thumbnail: store.thumbnails[item.id], isUnavailable: store.unavailableItems.contains(item.id),
+                       imageTextQuery: store.searchesImageText ? store.query : "")
         }
         .buttonStyle(HistoryRowButtonStyle())
         .focusable(false)
@@ -520,6 +521,7 @@ struct ContentView: View {
             copySelection()
         })
         .accessibilityLabel("\(item.title), \(item.kind.title), from \(item.source.name)")
+        .accessibilityValue(store.searchesImageText && !store.query.isEmpty ? item.imageTextMatch ?? "" : "")
         .accessibilityAddTraits(store.selectedIDs.contains(item.id) ? .isSelected : [])
         .task(id: item.copiedAt) { await store.loadThumbnail(for: item) }
         .contextMenu {
@@ -1472,8 +1474,22 @@ private struct HistoryRow: View {
     let isMarked: Bool
     var thumbnail: NSImage?
     var isUnavailable = false
+    var imageTextQuery = ""
     @State private var isHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var metadata: AttributedString {
+        if let snippet = item.imageTextMatch, !imageTextQuery.isEmpty,
+           let match = ClipboardSearch(imageTextQuery).imageTextHighlight(in: snippet) {
+            var text = AttributedString(snippet)
+            if let range = Range(match, in: text) {
+                text[range].foregroundColor = .accentColor
+                text[range].font = .system(size: 11, weight: .semibold)
+            }
+            return text
+        }
+        return AttributedString("\(item.source.name) · \(item.copiedAt.formatted(date: .abbreviated, time: .shortened))")
+    }
 
     var body: some View {
         HStack(spacing: 9) {
@@ -1497,7 +1513,7 @@ private struct HistoryRow: View {
                 }
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.title).font(.system(size: 13)).lineLimit(1)
-                Text("\(item.source.name) · \(item.copiedAt.formatted(date: .abbreviated, time: .shortened))")
+                Text(metadata)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

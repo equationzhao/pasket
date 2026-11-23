@@ -55,6 +55,30 @@ nonisolated struct ClipboardSearch {
         rank(fields: [item.title, item.content, item.source.name, item.source.bundleIdentifier ?? ""])
     }
 
+    func imageTextRank(_ text: String) -> Double {
+        guard !isEmpty, !text.isEmpty else { return 0 }
+        if text.localizedStandardContains(query) { return 3 }
+        return tokens.allSatisfy { text.localizedStandardContains($0.text) } ? 2 : 0
+    }
+
+    func imageTextSnippet(_ text: String) -> String? {
+        guard imageTextRank(text) > 0 else { return nil }
+        let match = text.localizedStandardRange(of: query)
+            ?? tokens.lazy.compactMap { text.localizedStandardRange(of: $0.text) }.first
+        guard let match else { return nil }
+        let line = text.lineRange(for: match)
+        let start = text.index(match.lowerBound, offsetBy: -10, limitedBy: line.lowerBound) ?? line.lowerBound
+        let end = text.index(start, offsetBy: 110, limitedBy: line.upperBound) ?? line.upperBound
+        return (start > line.lowerBound ? "…" : "")
+            + text[start..<end].split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            + (end < line.upperBound ? "…" : "")
+    }
+
+    func imageTextHighlight(in snippet: String) -> Range<String.Index>? {
+        snippet.localizedStandardRange(of: query)
+            ?? tokens.lazy.compactMap { snippet.localizedStandardRange(of: $0.text) }.first
+    }
+
     private static func fold(_ text: String) -> String {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
             .precomposedStringWithCanonicalMapping
