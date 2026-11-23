@@ -37,8 +37,8 @@ nonisolated enum ClipboardStorageError: LocalizedError {
         case .invalidImage: "This image could not be saved."
         case .largeImage: "Image not saved: the limit is 20 MB and 40 million pixels."
         case .invalidHistory: "The history file is damaged. It has been left unchanged."
-        case .missingImage: "This saved image is unavailable. You can delete its history entry."
-        case .imageBudget: "Image not saved: the image and its thumbnail exceed your image storage limit. Existing history has been kept."
+        case .missingImage: "This saved image is unavailable."
+        case .imageBudget: "Image not saved: the image and its thumbnail exceed your image storage limit."
         case .invalidRetention: "History limits must be positive whole numbers or Unlimited."
         }
     }

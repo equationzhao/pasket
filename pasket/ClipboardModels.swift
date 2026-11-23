@@ -95,6 +95,8 @@ nonisolated struct ClipboardItem: Identifiable, Codable, Sendable {
     var imageFile: ClipboardFile? { kind == .file && files.count == 1 && files[0].isImage ? files[0] : nil }
     var hasImagePreview: Bool { kind == .image || imageFile != nil }
 
+    var canEditText: Bool { [.text, .link, .email].contains(kind) }
+
     static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }

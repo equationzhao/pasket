@@ -76,12 +76,12 @@ final class ClipboardPasteController {
         if let expectedChangeCount, clipboardChangeCount() != expectedChangeCount { return false }
         prepareForPresentation()
         guard let target, target.canPrepareForPaste else {
-            errorMessage = "Item copied. Open history from the app where you want to paste, or use that app's Paste command."
+            errorMessage = "Open history from the app where you want to paste, or use that app's Paste command."
             return false
         }
         guard hasAccess() else {
             needsPermission = true
-            errorMessage = "Item copied. Allow Pasket in System Settings > Privacy & Security > Accessibility to paste automatically. You can also press Escape, then use the app's Paste command."
+            errorMessage = "Allow Pasket in System Settings > Privacy & Security > Accessibility to paste automatically. For manual paste, press Escape and use the app's Paste command."
             systemAccess.present(.accessibility)
             return false
         }

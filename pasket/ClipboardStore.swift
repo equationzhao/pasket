@@ -26,7 +26,10 @@ final class ClipboardStore {
     var selectedItems: [ClipboardItem] { filteredItems.filter { selectedIDs.contains($0.id) } }
     var presentationID = UUID()
     private(set) var copyError: String? {
-        didSet { toasts.show(copyError, source: .copy, title: "Could Not Copy", style: .error) }
+        didSet {
+            guard copyError != nil || oldValue != nil else { return }
+            toasts.show(copyError, source: .copy, title: "Could Not Copy", style: .error)
+        }
     }
     private(set) var storageError: String? {
         didSet { updateStorageToast() }
@@ -261,13 +264,16 @@ final class ClipboardStore {
             }
             isPaused = history.isPaused
             retentionSettings = history.retention ?? .default
-            needsRetentionReview = history.retention == nil
             storageBlocked = false
             storageError = nil
-            if needsRetentionReview {
+            if history.retention == nil {
                 let result = try await persistence.applyRetention(.default)
-                if case .applied = result { needsRetentionReview = false }
+                switch result {
+                case .confirmationRequired: needsRetentionReview = true
+                case .applied: needsRetentionReview = false
+                }
             } else {
+                needsRetentionReview = false
                 try await persistence.apply([.maintenance])
             }
             if !searchesImageText { try await persistence.clearImageText() }
@@ -314,7 +320,17 @@ final class ClipboardStore {
                 do {
                     try await persistence.clearImageText()
                 } catch {
-                    self?.toasts.show(error.localizedDescription, source: .imageText,
+                    let errorInfo = error as NSError
+                    let message: String
+                    switch (errorInfo.domain, errorInfo.code) {
+                    case (NSCocoaErrorDomain, CocoaError.fileReadNoPermission.rawValue),
+                         (NSCocoaErrorDomain, CocoaError.fileWriteNoPermission.rawValue),
+                         (NSPOSIXErrorDomain, Int(EACCES)), (NSPOSIXErrorDomain, Int(EPERM)):
+                        message = "Permission denied."
+                    default:
+                        message = error.localizedDescription
+                    }
+                    self?.toasts.show(message, source: .imageText,
                                      title: "Could Not Clear Image Text", style: .error)
                     throw error
                 }
@@ -354,8 +370,7 @@ final class ClipboardStore {
             guard !Task.isCancelled, !stopRequested, presentationID == presentation else { return }
             let text = result.text
             if text.isEmpty {
-                toasts.show("There is no recognizable text in this image.", source: .imageText,
-                            title: "No Text Found", style: .information)
+                toasts.showNoImageText()
                 return
             }
             guard pasteboard.changeCount == clipboardSnapshot else {
@@ -371,7 +386,7 @@ final class ClipboardStore {
             guard copied else { throw CocoaError(.fileWriteUnknown) }
             pasteQueue.cancel()
             copyStatistics.recordEvent(at: Date())
-            toasts.show("Text is ready to paste.", source: .imageText, title: "Copied Text", style: .success)
+            toasts.showSuccess("Copied Text", source: .imageText)
         } catch {
             guard !Task.isCancelled, !stopRequested, presentationID == presentation else { return }
             toasts.show(error.localizedDescription, source: .imageText,
@@ -552,7 +567,10 @@ final class ClipboardStore {
         }
         HistoryPerformance.signposter.emitEvent("History Presentation Result",
             "status=\(status, privacy: .public) references=\(self.resultReferences.count, privacy: .public)")
-        Task { await refreshFileAvailability() }
+        Task {
+            if !isDebugMode, !isLoading, storageError != nil { await retryStorage() }
+            await refreshFileAvailability()
+        }
     }
 
     private func reuseResultsForPresentation() -> Bool {
@@ -748,7 +766,8 @@ final class ClipboardStore {
         reconcileSelection()
         totalCount = max(0, totalCount - deleted.count)
         matchingCount = max(0, matchingCount - deleted.count)
-        persist(deleted.map { .deleteFingerprint($0.fingerprint) })
+        let title = deleted.count == 1 ? "Item Deleted" : "\(deleted.count) Items Deleted"
+        persist(deleted.map { .deleteFingerprint($0.fingerprint) }, feedback: (title, .deletion))
     }
 
     func deleteUnavailableFiles() async {
@@ -797,6 +816,13 @@ final class ClipboardStore {
         guard !pasteQueue.isPasting else { return false }
         pasteQueue.cancel()
         return await copyItems(separator: separator, reversed: reversed)
+    }
+
+    func copySelectionToClipboard(separator: ClipboardTextSeparator, reversed: Bool) async {
+        let presentation = presentationID
+        let copiesText = selectedItems.allSatisfy(\.canEditText)
+        guard await copySelection(separator: separator, reversed: reversed), presentationID == presentation else { return }
+        toasts.showSuccess(copiesText ? "Copied Text" : "Copied to Clipboard", source: .copy)
     }
 
     @discardableResult
@@ -1155,19 +1181,16 @@ final class ClipboardStore {
     }
 
     private func updateStorageToast() {
-        toasts.show(storageError, source: .storage, title: "History Storage Needs Attention",
-                    style: .error, action: .retryStorage)
+        toasts.showSaveFailure(from: .storage, isActive: storageError != nil)
     }
 
     private func updateRetentionToast() {
-        toasts.show(needsRetentionReview
-                    ? "Review history limits to enable automatic cleanup. Your existing history has been kept." : nil,
-                    source: .retention, title: "Review History Limits",
-                    style: .information, action: .reviewHistory)
+        toasts.showSaveFailure(from: .retention, isActive: needsRetentionReview)
     }
 
-    private func persist(_ mutations: [ClipboardMutation]) {
+    private func persist(_ mutations: [ClipboardMutation], feedback: (title: String, source: PasketToast.Source)? = nil) {
         guard !storageBlocked else { return }
+        let presentation = isPresented ? presentationID : nil
         pendingMutations.append(contentsOf: mutations)
         queryGeneration += 1
         let previousSave = saveTask
@@ -1182,6 +1205,9 @@ final class ClipboardStore {
                 }
                 storageError = nil
                 if pendingMutations.isEmpty { try await refreshResults() }
+                if let feedback, presentation == presentationID {
+                    toasts.showSuccess(feedback.title, source: feedback.source)
+                }
                 if batch.contains(where: { mutation in
                     if case .upsert(let item) = mutation { return item.image != nil }
                     return false

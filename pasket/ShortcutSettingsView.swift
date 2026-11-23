@@ -647,7 +647,7 @@ struct PasketSetupView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Choose your shortcut")
                     .font(.system(size: 18, weight: .medium))
-                Text("Open clipboard history from any app with a combination that feels familiar. You can also use the menu bar without a shortcut.")
+                Text("Open clipboard history from any app with a combination that feels familiar.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -687,9 +687,6 @@ struct PasketSetupView: View {
                 .font(.system(size: 12))
                 .help("Stop shortcut reminders at launch. Missing permissions will still be shown.")
                 .accessibilityIdentifier("neverAskForInvocationShortcut")
-            Text("You can always add or change a shortcut in Settings.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -948,7 +945,7 @@ private struct HistoryRetentionSettingsView: View {
             SettingsSectionHeader(title: "History", showsUnsavedChanges: hasChanges)
             VStack(alignment: .leading, spacing: 0) {
                 if store.needsRetentionReview {
-                    Label("Review and apply your history limits to enable automatic cleanup. Existing history has been kept.",
+                    Label("Review and apply your history limits to enable automatic cleanup.",
                           systemImage: "info.circle")
                         .font(.system(size: 12))
                         .foregroundStyle(.orange)

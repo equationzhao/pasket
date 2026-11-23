@@ -161,12 +161,15 @@ use its close button, Escape, or Command-W to close it. Settings remains a separ
 - **Escape** dismisses the panel. With the filter, paste-options, or **…** menu open, Escape first
   closes that menu and restores search focus. All menus use the same custom appearance and support
   arrow keys and Return; clicking outside also closes them. Bottom menus open above their buttons.
-- Notices appear as floating toast cards above the footer without moving the history list.
-  Cleanup confirmations disappear after four seconds; other transient messages after eight seconds.
-  Hovering or focusing a toast with accessibility tools pauses its timer. Each card has a dismiss button.
-  Storage and history-limit problems retain their recovery action until dismissed or
-  resolved. New messages appear first; dismissing one reveals any previous unresolved message.
-  Reopening history restores unresolved storage and history-limit reminders.
+- History notifications share the left footer status. Brief successes last one second.
+  **No Text Found** lasts 3.5 seconds, the paste-order hint lasts four seconds, and other
+  transient notices last eight seconds.
+  Hover and accessibility focus pause dismissal. **File Saved** offers **Show in Finder**
+  on the same line. A file saved with a tag error places **Show in Finder** beside
+  **Failed to apply tags.** beneath the title and stays available until dismissed or opened in Finder.
+  File export failures, history storage failures, and pending history-limit reviews share
+  **Save Failed** and one close control. Reopening history retries failed storage operations
+  and restores unresolved history reminders.
 - Startup checks guide users through missing clipboard and Accessibility permissions before
   shortcut setup. Later, automatic paste requests Accessibility if access was revoked, and
   resuming collection while clipboard access is denied offers to open System Settings.
@@ -462,10 +465,12 @@ For the desktop smoke test:
   the gap; copying and deletion must include every selected entry. Confirm the focused row stays
   visible, date headers stay aligned, accessible row names remain readable, and reopening starts
   at the top. Resize the panel while scrolled near the end and check that the viewport stays usable.
-- Choose **… → Delete Unavailable Files** and verify a green cleanup toast appears above
-  the footer without moving the list or covering its controls. Repeat after it disappears, and
-  while it is still visible, to check that the notification restarts. Verify hover pauses dismissal,
-  the close button works, and light/dark appearance and Reduce Motion remain readable.
+- Choose **… → Delete Unavailable Files**, **Copy to Clipboard**, or **Copy Text from Image**.
+  Verify the left footer status expands in place and restores the count, and copy again
+  while feedback is visible to check that the timer restarts. Verify hover pauses dismissal
+  and check light/dark appearance, Liquid Glass, Classic, and Reduce Motion. Save a file
+  and verify **File Saved** and **Show in Finder** share a single line.
+  Verify a tag write failure shows **Failed to apply tags.** and the Finder action together below the title.
   Without paste permission, verify attempting to paste displays a native permission dialog with
   **Cancel** and **Open System Settings…**, and the latter opens Accessibility settings.
   Cancel and reopen history: no permission dialog or toast should appear until another paste attempt.
@@ -474,7 +479,8 @@ For the desktop smoke test:
   launching a replacement. Granting access and relaunching must not replay the previous paste.
   With clipboard collection denied, verify opening history remains quiet and the collection control
   or **Allow Clipboard Access…** menu action opens the permission dialog. Background polling must
-  not reopen it after Cancel. Retry a failed history save and confirm its toast clears when storage recovers.
+  not reopen it after Cancel. Reopen history after restoring storage access and confirm
+  **Save Failed** clears when storage recovers.
 - In Settings → Accent color, select each swatch and verify selections, buttons, the Dock icon
   preview outline, and the history collection indicator use that color. Reopen history and Settings,
   then relaunch to check persistence. Select System to restore the macOS accent and check light
@@ -627,7 +633,7 @@ the updated desktop checks above have not yet been reported.
 - `ApplicationController.swift`: panel, settings, focus restoration, and termination handling.
 - `AppRelaunch.swift`: launches the current app again and waits for the previous process to exit.
 - `ContentView.swift`: search, filters, previews, and history controls.
-- `PasketToast.swift` and `PasketToastView.swift`: shared notifications, recovery actions, and floating toast presentation.
+- `PasketToast.swift` and `PasketToastView.swift` present operation feedback in the history footer.
 - `SystemAccessController.swift`: permission dialogs requested by blocked user operations.
 - `ClipboardModels.swift`: versioned records, classification, fingerprints, and limits.
 - `ClipboardMonitor.swift`: polling, sensitive-type exclusions, and source estimation.

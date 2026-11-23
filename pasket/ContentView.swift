@@ -64,7 +64,10 @@ struct ContentView: View {
         if store.selectedIDs.count <= 1 { return "Paste" }
         return store.canCombineSelection ? "Paste Together" : "Start Paste Queue"
     }
-    private var footerGlassInset: CGFloat { appearance == .liquidGlass ? 4 : 0 }
+    private static let selectRecentShortcut = GlobalShortcut(keyCode: UInt32(kVK_Tab), modifiers: UInt32(shiftKey), keyLabel: "⇥")
+
+    private var usesFooterGlass: Bool { appearance == .liquidGlass }
+    private var footerGlassInset: CGFloat { usesFooterGlass ? 4 : 0 }
 
     var body: some View {
         historySurface
@@ -202,10 +205,6 @@ struct ContentView: View {
         .modifier(PasketSurface())
         .frame(minWidth: 760, minHeight: 480)
         .coordinateSpace(name: "clipboardPanel")
-        .overlay(alignment: .bottom) {
-            PasketToastOverlay(center: store.toasts, onAction: handleToastAction)
-                .padding(.bottom, 56)
-        }
         .overlay(alignment: .topTrailing) {
             if isFilterMenuPresented {
                 ZStack(alignment: .topTrailing) {
@@ -709,8 +708,8 @@ struct ContentView: View {
                 .frame(width: 16, height: 16)
                 .accessibilityHidden(true)
         }
-        .buttonStyle(PasketButtonStyle())
-        .controlSize(appearance == .liquidGlass ? .small : .regular)
+        .buttonStyle(PasketButtonStyle(isInGlassGroup: usesFooterGlass))
+        .controlSize(usesFooterGlass ? .small : .regular)
         .focusable(false)
         .fixedSize()
         .disabled(store.isDebugMode || store.isLoading || store.isStorageBlocked)
@@ -728,11 +727,11 @@ struct ContentView: View {
                     Button(action: selectRecentCopies) {
                         HStack(spacing: 8) {
                             Text("Select Recent")
-                            ShortcutKeycap(key: "⇧⇥", isCompact: appearance == .liquidGlass)
+                            ShortcutKeycaps(shortcut: Self.selectRecentShortcut, isCompact: usesFooterGlass)
                                 .foregroundStyle(.secondary).accessibilityHidden(true)
                         }
                     }
-                    .buttonStyle(PasketButtonStyle())
+                    .buttonStyle(PasketButtonStyle(isInGlassGroup: usesFooterGlass))
                     .controlSize(.small)
                     .focusable(false)
                     .fixedSize()
@@ -757,13 +756,15 @@ struct ContentView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 6) {
-            applyFooterGlass(to: footerStatus)
-            Spacer()
+        HStack(alignment: .bottom, spacing: 6) {
+            PasketFooterStatus(center: store.toasts, onAction: handleToastAction) { footerStatus }
+            Spacer(minLength: 0)
             ViewThatFits(in: .horizontal) {
                 Text("↑ ↓ Navigate · Tab Select / Deselect").fixedSize()
                 Text("↑ ↓ · Tab").fixedSize()
+                Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
             }
+            .frame(height: usesFooterGlass ? 34 : 28)
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .help("Use arrow keys to move focus. Press Tab to select or deselect the focused item.")
@@ -790,16 +791,15 @@ struct ContentView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 9)
-                .frame(minHeight: appearance == .liquidGlass ? 26 : 28)
             } else {
-                HStack(spacing: appearance == .liquidGlass ? 0 : 6) {
+                HStack(spacing: usesFooterGlass ? 0 : 6) {
                     collectionControl
                     Text("\(store.isDebugMode ? store.displayedItems.count : store.totalCount) items")
                         .font(.system(size: 12))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .help("Change history limits in Settings → History. Text entries are limited to 2,000 characters.")
-                        .padding(.trailing, appearance == .liquidGlass ? 8 : 0)
+                        .padding(.trailing, usesFooterGlass ? 8 : 0)
                 }
                 .fixedSize()
             }
@@ -809,23 +809,22 @@ struct ContentView: View {
     private func applyFooterGlass(to group: some View) -> some View {
         group
             .padding(footerGlassInset)
-            .glassEffect(appearance == .liquidGlass ? .regular : .identity, in: Capsule())
+            .glassEffect(usesFooterGlass ? .regular : .identity, in: Capsule())
     }
 
     private var footerActions: some View {
-        let usesGlass = appearance == .liquidGlass
-        return HStack(spacing: 6) {
+        HStack(spacing: usesFooterGlass ? 2 : 6) {
             selectRecentControl
             selectionCount
             Button(action: copySelection) {
                 HStack(spacing: 8) {
                     Text(pasteActionTitle)
-                    ShortcutKeycap(key: "↵", isCompact: usesGlass)
+                    ShortcutKeycap(key: "↵", isCompact: usesFooterGlass)
                         .foregroundStyle(.secondary).accessibilityHidden(true)
                 }
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 12, weight: usesFooterGlass ? .semibold : .medium))
             }
-            .buttonStyle(PasketButtonStyle(isProminent: true))
+            .buttonStyle(PasketButtonStyle(isProminent: true, isInGlassGroup: usesFooterGlass))
             .controlSize(.small)
             .focusable(false)
             .fixedSize()
@@ -841,7 +840,7 @@ struct ContentView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Text("Options")
-                        if usesGlass {
+                        if usesFooterGlass {
                             ShortcutKeycap(key: "⌥", isCompact: true)
                                 .foregroundStyle(.secondary).accessibilityHidden(true)
                         } else {
@@ -850,8 +849,9 @@ struct ContentView: View {
                     }
                     .font(.system(size: 12, weight: .medium))
                 }
-                .buttonStyle(PasketButtonStyle(isProminent: !usesGlass, isActive: isPasteMenuPresented))
-                .controlSize(usesGlass ? .small : .regular)
+                .buttonStyle(PasketButtonStyle(isProminent: !usesFooterGlass, isActive: isPasteMenuPresented,
+                                               isInGlassGroup: usesFooterGlass))
+                .controlSize(usesFooterGlass ? .small : .regular)
                 .focusable(false)
                 .fixedSize()
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("clipboardPanel")) } action: { pasteControlFrame = $0 }
@@ -863,14 +863,14 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     Text("Actions")
                     if let shortcut = shortcuts.actionsShortcut {
-                        ShortcutKeycaps(shortcut: shortcut, isCompact: usesGlass)
+                        ShortcutKeycaps(shortcut: shortcut, isCompact: usesFooterGlass)
                             .foregroundStyle(.secondary).accessibilityHidden(true)
                     }
                 }
                 .font(.system(size: 12))
                 .frame(minHeight: 18)
             }
-            .buttonStyle(PasketButtonStyle(isActive: isActionsMenuPresented))
+            .buttonStyle(PasketButtonStyle(isActive: isActionsMenuPresented, isInGlassGroup: usesFooterGlass))
             .controlSize(.small)
             .focusable(false)
             .fixedSize()
@@ -904,10 +904,9 @@ struct ContentView: View {
 
     private func handleToastAction(_ action: PasketToast.Action) {
         switch action {
-        case .retryStorage:
-            Task { await store.retryStorage() }
-        case .reviewHistory:
-            onOpenSettings()
+        case .showInFinder(let url):
+            store.toasts.dismiss(source: .fileExport)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         }
     }
 
@@ -1021,13 +1020,7 @@ struct ContentView: View {
         guard canPasteSelection, store.canCombineSelection else { return }
         let separator = textSeparator
         let reversed = reversePasteOrder
-        let presentation = store.presentationID
-        Task {
-            if await store.copySelection(separator: separator, reversed: reversed),
-               store.presentationID == presentation {
-                store.toasts.show("Ready to paste.", source: .copy, title: "Copied to Clipboard", style: .success)
-            }
-        }
+        Task { await store.copySelectionToClipboard(separator: separator, reversed: reversed) }
     }
 
     private func performAction(_ action: ClipboardActionsMenu.Action) {
@@ -1801,6 +1794,7 @@ struct PasketButtonStyle: ButtonStyle {
     var isProminent = false
     var isActive = false
     var hasBackground = false
+    var isInGlassGroup = false
     @Environment(\.controlSize) private var controlSize
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1810,11 +1804,15 @@ struct PasketButtonStyle: ButtonStyle {
         let isSmall = controlSize == .small || controlSize == .mini
         let isDestructive = configuration.role == .destructive
         let isInteracting = isEnabled && (isHovered || configuration.isPressed)
+        let usesAccent = isActive || (isProminent && !isInGlassGroup)
         let tint: Color = isDestructive ? .red
-            : isProminent || isActive ? (isEnabled ? .accentColor : .secondary) : .primary
-        let backgroundOpacity: Double = isEnabled && configuration.isPressed ? (hasBackground ? 0.12 : 0.2)
+            : usesAccent ? (isEnabled ? .accentColor : .secondary)
+            : isInGlassGroup && !isProminent ? .secondary : .primary
+        let standardFill: Double = isEnabled && configuration.isPressed ? (hasBackground ? 0.12 : 0.2)
             : isInteracting ? (hasBackground ? 0.08 : 0.12)
             : isProminent || isActive ? 0.08 : hasBackground ? 0.05 : 0
+        let glassFill: Double = !isEnabled ? 0
+            : configuration.isPressed ? 0.14 : isActive ? 0.10 : isHovered ? 0.065 : 0
         let borderOpacity: Double = isInteracting ? (hasBackground ? 0.12 : 0.2)
             : isProminent || isActive ? 0.12 : hasBackground ? 0.07 : 0
 
@@ -1826,15 +1824,18 @@ struct PasketButtonStyle: ButtonStyle {
             .frame(minHeight: isSmall ? 26 : nil)
             .background {
                 PasketShape.control
-                    .fill(tint.opacity(backgroundOpacity))
+                    .fill((isInGlassGroup && !isActive ? Color.primary : tint)
+                        .opacity(isInGlassGroup ? glassFill : standardFill))
             }
             .overlay {
-                PasketShape.control
-                    .strokeBorder(tint.opacity(borderOpacity))
-                    .allowsHitTesting(false)
+                if !isInGlassGroup {
+                    PasketShape.control
+                        .strokeBorder(tint.opacity(borderOpacity))
+                        .allowsHitTesting(false)
+                }
             }
             .contentShape(PasketShape.control)
-            .opacity(isEnabled ? 1 : 0.35)
+            .opacity(isEnabled ? 1 : isInGlassGroup ? 0.55 : 0.35)
             .onHover { isHovered = $0 }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isInteracting)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
@@ -1984,8 +1985,11 @@ struct PasketPickerOverlay: ViewModifier {
 }
 
 struct PasketCloseButton: View {
+    static let smallWidth: CGFloat = 32
+
     let title: String
     let help: String
+    var isInGlassGroup = false
     var action: () -> Void
 
     var body: some View {
@@ -1994,7 +1998,7 @@ struct PasketCloseButton: View {
                 .font(.system(size: 12, weight: .medium))
                 .frame(width: 14, height: 16)
         }
-        .buttonStyle(PasketButtonStyle())
+        .buttonStyle(PasketButtonStyle(isInGlassGroup: isInGlassGroup))
         .help(help)
         .accessibilityLabel(title)
     }

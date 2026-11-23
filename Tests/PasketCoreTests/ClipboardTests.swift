@@ -120,6 +120,8 @@ struct ClipboardTests {
         fixture.store.select(item.id)
         await fixture.store.copySelectedImageText()
         #expect(fixture.pasteboard.string(forType: .string) == "PAYMENT REFERENCE 4512")
+        #expect(fixture.store.toasts.current?.title == "Copied Text")
+        #expect(fixture.store.toasts.current?.duration == .seconds(1))
         fixture.store.pollClipboard()
         await fixture.store.flush()
         #expect(fixture.store.totalCount == 1)
@@ -1849,7 +1851,7 @@ struct ClipboardTests {
         await fixture.cleanUp()
     }
 
-    @Test func failedDeletionSaveKeepsMediaUntilRetrySucceeds() async throws {
+    @Test func reopeningHistoryRetriesFailedDeletionSave() async throws {
         let fixture = try Fixture()
         await fixture.start()
         fixture.pasteboard.clearContents()
@@ -1866,14 +1868,19 @@ struct ClipboardTests {
         fixture.store.delete(item.id)
         await fixture.store.flush()
         #expect(fixture.store.storageError != nil)
-        #expect(fixture.store.toasts.current?.action == .retryStorage)
+        #expect(fixture.store.toasts.current?.title == "Save Failed")
         #expect(FileManager.default.fileExists(atPath: imageURL.path))
         let text = String(repeating: "a", count: 900) + " unsaved tail"
         await fixture.copy(text)
         #expect(fixture.store.selectedItem?.content == text)
         try FileManager.default.removeItem(at: historyURL)
         try original.write(to: historyURL)
-        await fixture.store.retryStorage()
+        fixture.store.prepareForPresentation()
+        for _ in 0..<150 {
+            if fixture.store.storageError == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await fixture.store.flush()
         #expect(fixture.store.storageError == nil)
         #expect(!fixture.store.toasts.messages.contains { $0.source == .storage })
         #expect(!FileManager.default.fileExists(atPath: imageURL.path))
@@ -1894,6 +1901,58 @@ struct ClipboardTests {
         try await persistence.save(ClipboardHistory(items: [item]))
         try await persistence.save(ClipboardHistory())
         await #expect(throws: ClipboardStorageError.self) { try await persistence.imageData(image) }
+        await fixture.cleanUp()
+    }
+
+    @Test func refreshingSelectionKeepsTheCopySuccessFeedback() async throws {
+        let fixture = try Fixture()
+        await fixture.start()
+        await fixture.copy("Text to copy")
+        await fixture.store.copySelectionToClipboard(separator: .newline, reversed: false)
+        let feedback = try #require(fixture.store.toasts.current)
+        #expect(fixture.pasteboard.string(forType: .string) == "Text to copy")
+        #expect(feedback.title == "Copied Text")
+        #expect(feedback.duration == .seconds(1))
+        await fixture.store.flush()
+        fixture.store.reconcileSelection()
+        #expect(fixture.store.toasts.current == feedback)
+        await fixture.cleanUp()
+    }
+
+    @Test func deletingSelectedItemsReportsTheCommittedCount() async throws {
+        let fixture = try Fixture()
+        let persistence = ClipboardPersistence(directory: fixture.directory)
+        let items = (1...3).map { ClipboardItem.text("Example \($0)", source: .unknown, at: .now) }
+        try await persistence.save(ClipboardHistory(items: items))
+        await fixture.start()
+        fixture.store.prepareForPresentation()
+        fixture.store.delete(items[0].id)
+        await fixture.store.flush()
+        #expect(try await persistence.item(items[0].id) == nil)
+        #expect(fixture.store.toasts.current?.title == "Item Deleted")
+        fixture.store.deleteItems(Set(items.dropFirst().map(\.id)))
+        await fixture.store.flush()
+        #expect(fixture.store.totalCount == 0)
+        #expect(fixture.store.toasts.current?.title == "2 Items Deleted")
+        #expect(fixture.store.toasts.current?.duration == .seconds(1))
+        await fixture.cleanUp()
+    }
+
+    @Test func blankImageShowsBriefNoTextFeedbackAndKeepsTheClipboard() async throws {
+        let fixture = try Fixture(recognizeImageText: { _, _ in "" })
+        let persistence = ClipboardPersistence(directory: fixture.directory)
+        let item = try await persistence.importImage(Self.smallPNG(), source: .unknown, at: .now)
+        try await persistence.save(ClipboardHistory(items: [item]))
+        fixture.write("Original clipboard text")
+        await fixture.start()
+        fixture.store.prepareForPresentation()
+        fixture.store.select(item.id)
+        await fixture.store.copySelectedImageText()
+        #expect(fixture.pasteboard.string(forType: .string) == "Original clipboard text")
+        let feedback = try #require(fixture.store.toasts.current)
+        #expect(feedback.title == "No Text Found")
+        #expect(feedback.message == nil)
+        #expect(feedback.duration == .milliseconds(3500))
         await fixture.cleanUp()
     }
 

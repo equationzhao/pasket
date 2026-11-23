@@ -63,11 +63,8 @@ and shadow of paste and more-action menus.
 Accent-color swatches remain circular, and status pills may use a capsule. Do not force
 these semantic shapes into the rounded-rectangle scale.
 
-Existing specialized surfaces are outside the shared shape migration:
-toast cards use 14 points with a 9-point icon background; chart
-bars have their own geometry. These are existing local treatments, not additional defaults
-for ordinary controls. Reassess them when changing those components and document any
-new shared role here.
+The history status uses a capsule for single-line feedback and the menu radius for
+feedback with supporting text. Chart bars retain their own geometry.
 
 ## Settings layout
 
@@ -266,10 +263,31 @@ Floating menus draw above `PasketSurface` with their own material and option lab
 
 In Liquid Glass, the history footer uses two native regular glass capsules with a 4-point
 inset. The left capsule groups the collection indicator and history count. The right capsule
-groups Select Recent, Paste, Options, and Actions, with compact secondary keycaps. Paste uses
-the prominent accent treatment. Options and Actions use the active treatment when their menus
-are open. Anchor menus above the action group with the standard trigger gap. Classic presents
-the controls directly in the footer with standard keycaps.
+groups Select Recent, Paste, Options, and Actions with 2-point spacing and compact secondary
+keycaps. The capsule supplies the shared outline. Its controls use the standard 26-point
+hit height with transparent resting backgrounds. Paste has a semibold primary label, with
+secondary labels for the surrounding actions. Hover and press add a soft neutral fill.
+Options and Actions use an accent fill while their menus are open. Disabled buttons dim
+their labels and shortcuts. Anchor menus above the action group with the standard trigger gap.
+Classic presents the controls directly in the footer with standard keycaps.
+
+The left status displays history notifications in place. A single-line notice fits a status
+icon and a 12-point medium title. When a notice includes supporting text, the left surface
+grows upward while the right controls stay at the bottom. The notice fits its content.
+The supporting row uses 12-point secondary text and wraps within a 300-point maximum width.
+The title row follows the width of the notice and keeps its close control at the trailing edge.
+Liquid Glass uses the secondary grouped button style for the close control.
+Changes in width and height take 0.26 seconds
+and become immediate under Reduce Motion. Liquid Glass resizes its native surface.
+Classic uses a subtle neutral fill for the notification.
+
+Brief successes display a green checkmark for one second. Text copy, pinning, unpinning,
+and deletion use a single-line result. **No Text Found** also uses one line and stays
+visible for 3.5 seconds. A successful export puts **Show in Finder** next to **File Saved**.
+When writing tags fails, **File Saved** uses a warning icon. The supporting row pairs
+**Failed to apply tags.** with **Show in Finder**.
+Export failures, history storage failures, and history limits awaiting review use the
+same red **Save Failed** label and close control.
 
 Manual image text extraction replaces the left footer status after 300 milliseconds with
 a small spinner and a 12-point secondary label. It uses the collection control's height
@@ -334,7 +352,8 @@ Disabled prominent and active buttons use secondary gray instead of the accent c
 the shared 0.35 disabled opacity, with no hover or press feedback. Destructive actions
 retain their red tint. Apply is disabled until valid changes or a required history-limit
 review can be saved; loading, storage restrictions, and an in-progress apply also disable it.
-Ordinary buttons retain their existing subtle fill and outline treatments. All buttons
+Ordinary buttons use subtle fill and outline treatments. Controls inside a glass footer
+capsule use the grouped treatment described above. All buttons
 share hover tracking, press handling, corner geometry, and Reduce Motion behavior.
 
 Use the existing short button transitions (0.12 seconds for interaction and 0.08 seconds

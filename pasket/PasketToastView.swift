@@ -1,83 +1,115 @@
 import SwiftUI
 
-struct PasketToastOverlay: View {
-    @Bindable var center: PasketToastCenter
+struct PasketFooterStatus<Status: View>: View {
+    var center: PasketToastCenter
     var onAction: (PasketToast.Action) -> Void
+    @ViewBuilder var status: () -> Status
+    @Environment(\.pasketAppearance) private var appearance
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var size: CGSize?
     @State private var isHovered = false
     @AccessibilityFocusState private var isAccessibilityFocused: Bool
 
-    private struct TimeoutIdentity: Equatable {
-        let id: UUID?
-        let isPaused: Bool
-    }
-
     var body: some View {
-        VStack {
-            if let toast = center.current {
-                card(toast)
-                    .id(toast.id)
-                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+        let toast = center.current
+        let detail = toast?.isBriefSuccess == false ? toast?.message : nil
+        let hasDetail = detail != nil
+        let usesGlass = appearance == .liquidGlass
+        let rowHeight: CGFloat = usesGlass ? 26 : 28
+        let inset: CGFloat = usesGlass ? 4 : 0
+        let radius = hasDetail ? PasketShape.controlRadius + PasketShape.menuInset : rowHeight / 2 + inset
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+
+        Group {
+            if let toast {
+                notification(toast, detail: detail, rowHeight: rowHeight, usesGlass: usesGlass)
+                    .accessibilityElement(children: toast.isBriefSuccess ? .combine : .contain)
+                    .accessibilityFocused($isAccessibilityFocused)
+                    .accessibilityIdentifier(toast.isBriefSuccess ? "clipboardFooterSuccess" : "clipboardToast")
+            } else {
+                status().frame(height: rowHeight)
             }
         }
-        .frame(maxWidth: 460)
-        .padding(.horizontal, 20)
+        .padding(inset)
+        .fixedSize()
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
+            withAnimation(reduceMotion || size == nil ? nil : .smooth(duration: 0.26)) {
+                size = newSize
+            }
+        }
+        .frame(width: size?.width, height: size?.height, alignment: .topLeading)
+        .clipShape(shape)
+        .background {
+            if toast != nil && !usesGlass {
+                shape.fill(.primary.opacity(0.06))
+            }
+        }
+        .glassEffect(usesGlass ? .regular : .identity, in: shape)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.26), value: hasDetail)
         .onHover { isHovered = $0 }
-        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9), value: center.current?.id)
-        .task(id: TimeoutIdentity(id: center.current?.id, isPaused: isHovered || isAccessibilityFocused)) {
-            guard !isHovered, !isAccessibilityFocused,
-                  let toast = center.current, let duration = toast.duration else { return }
-            do {
-                try await Task.sleep(for: duration)
-                try Task.checkCancellation()
-                center.dismiss(id: toast.id)
-            } catch {}
-        }
-        .onChange(of: center.current?.id, initial: true) {
-            if let toast = center.current {
-                AccessibilityNotification.Announcement("\(toast.title). \(toast.message)").post()
-            }
-        }
+        .modifier(PasketToastLifetime(toast: toast,
+                                      isPaused: isHovered || isAccessibilityFocused,
+                                      onDismiss: center.dismiss(id:)))
     }
 
-    private func card(_ toast: PasketToast) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol(for: toast.style))
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(tint(for: toast.style))
-                .frame(width: 30, height: 30)
-                .background(tint(for: toast.style).opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
+    private func notification(_ toast: PasketToast, detail: String?, rowHeight: CGFloat, usesGlass: Bool) -> some View {
+        let showsClose = toast.style != .success
+        let trailingInset: CGFloat = showsClose ? 4 : 9
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol(for: toast.style))
+                    .foregroundStyle(tint(for: toast.style))
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
                 Text(toast.title)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(toast.message)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let action = toast.action {
-                    Button(action.title) { onAction(action) }
-                        .buttonStyle(PasketButtonStyle(hasBackground: true))
-                        .font(.system(size: 12, weight: .medium))
-                        .padding(.top, 5)
+                    .lineLimit(1)
+                    .fixedSize()
+                if detail == nil, let action = toast.action {
+                    makeFinderButton(for: action, usesGlass: usesGlass)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            PasketCloseButton(title: "Dismiss notification", help: "Dismiss notification") {
-                center.dismiss(id: toast.id)
+            .font(.system(size: 12, weight: .medium))
+            .padding(.leading, 9)
+            .padding(.trailing, trailingInset + (showsClose ? PasketCloseButton.smallWidth + 6 : 0))
+            .frame(height: rowHeight)
+
+            if let detail {
+                ToastDetailLayout(maxWidth: 300) {
+                    HStack(spacing: 6) {
+                        Text(detail)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("clipboardFeedbackDetail")
+                        if let action = toast.action {
+                            makeFinderButton(for: action, usesGlass: usesGlass)
+                        }
+                    }
+                    .padding(.leading, 29)
+                    .padding(.trailing, 9)
+                    .padding(.bottom, toast.action == nil ? 8 : 3)
+                }
             }
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.primary.opacity(0.1), lineWidth: 0.5)
-                .allowsHitTesting(false)
+        .overlay(alignment: .topTrailing) {
+            if showsClose {
+                PasketCloseButton(title: "Dismiss notification", help: "Dismiss notification", isInGlassGroup: usesGlass) {
+                    center.dismiss(id: toast.id)
+                }
+                .controlSize(.small)
+                .frame(height: rowHeight)
+                .padding(.trailing, trailingInset)
+                .accessibilityIdentifier("dismissClipboardFeedback")
+            }
         }
-        .shadow(color: .black.opacity(0.15), radius: 16, y: 5)
-        .accessibilityElement(children: .contain)
-        .accessibilityFocused($isAccessibilityFocused)
-        .accessibilityIdentifier("clipboardToast")
+    }
+
+    private func makeFinderButton(for action: PasketToast.Action, usesGlass: Bool) -> some View {
+        Button("Show in Finder") { onAction(action) }
+            .buttonStyle(PasketButtonStyle(isProminent: true, isInGlassGroup: usesGlass))
+            .controlSize(.small)
+            .fixedSize()
+            .accessibilityIdentifier("showExportInFinder")
     }
 
     private func symbol(for style: PasketToast.Style) -> String {
@@ -96,5 +128,65 @@ struct PasketToastOverlay: View {
         case .warning: .orange
         case .error: .red
         }
+    }
+}
+
+private struct ToastDetailLayout: Layout {
+    let maxWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let detail = subviews[0]
+        let width = min(ceil(detail.sizeThatFits(.unspecified).width), maxWidth)
+        let height = detail.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews[0].place(at: bounds.origin, anchor: .topLeading,
+                          proposal: ProposedViewSize(width: bounds.width, height: nil))
+    }
+}
+
+private struct PasketToastLifetime: ViewModifier {
+    let toast: PasketToast?
+    let isPaused: Bool
+    let onDismiss: (UUID) -> Void
+    @State private var shownID: UUID?
+    @State private var remaining: Duration?
+    @State private var deadline: ContinuousClock.Instant?
+
+    private struct TimeoutIdentity: Equatable {
+        let id: UUID?
+        let isPaused: Bool
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: TimeoutIdentity(id: toast?.id, isPaused: isPaused)) {
+                let clock = ContinuousClock()
+                if shownID != toast?.id {
+                    shownID = toast?.id
+                    remaining = toast?.duration
+                    deadline = nil
+                }
+                if isPaused {
+                    if let deadline { remaining = max(.zero, clock.now.duration(to: deadline)) }
+                    deadline = nil
+                    return
+                }
+                guard let toast, let remaining else { return }
+                let end = deadline ?? clock.now.advanced(by: remaining)
+                deadline = end
+                do {
+                    try await clock.sleep(until: end)
+                    try Task.checkCancellation()
+                    onDismiss(toast.id)
+                } catch {}
+            }
+            .onChange(of: toast?.id, initial: true) {
+                if let toast {
+                    AccessibilityNotification.Announcement([toast.title, toast.message].compactMap { $0 }.joined(separator: ". ")).post()
+                }
+            }
     }
 }
