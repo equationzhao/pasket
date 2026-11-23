@@ -648,19 +648,19 @@ struct ContentView: View {
         let rows = informationValues(for: item)
         return ScrollView {
             VStack(spacing: 2) {
+                informationRow("Source", value: item.source.name, source: item.source, shaded: true)
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                    informationRow(row.title, value: row.value, shaded: index.isMultiple(of: 2))
+                    informationRow(row.title, value: row.value, shaded: !index.isMultiple(of: 2))
                 }
             }
         }
         .font(.system(size: 12))
-        .frame(height: min(CGFloat(rows.count) * 30 - 2, 180))
+        .frame(height: min(CGFloat(rows.count + 1) * 30 - 2, 180))
         .id(item.id)
     }
 
     private func informationValues(for item: ClipboardItem) -> [(title: String, value: String)] {
-        var rows = [(title: "Source", value: item.source.name),
-                    (title: "Type", value: item.kind.title),
+        var rows = [(title: "Type", value: item.kind.title),
                     (title: "Copied", value: item.copiedAt.formatted(date: .abbreviated, time: .shortened))]
         if [.text, .link, .email].contains(item.kind) {
             rows.append(("Characters", item.content.count.formatted()))
@@ -682,15 +682,17 @@ struct ContentView: View {
         return rows
     }
 
-    private func informationRow(_ title: String, value: String, shaded: Bool = false) -> some View {
+    private func informationRow(_ title: String, value: String, source: ClipboardSource? = nil,
+                                shaded: Bool = false) -> some View {
         HStack {
             Text(title).foregroundStyle(.secondary).fixedSize()
             Spacer(minLength: 12)
-            Text(value)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(value)
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
+            HStack(spacing: 6) {
+                if let source { ClipboardSourceIcon(bundleIdentifier: source.bundleIdentifier) }
+                Text(value).lineLimit(1).truncationMode(.middle)
+            }
+            .help(value)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.horizontal, 10)
         .frame(height: 28)
@@ -1032,6 +1034,24 @@ struct ContentView: View {
         isActionsMenuPresented = false
         isPasteMenuPresented = false
         searchFocused = true
+    }
+}
+
+private struct ClipboardSourceIcon: View {
+    let bundleIdentifier: String?
+
+    var body: some View {
+        Group {
+            if let bundleIdentifier, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Image(systemName: "app").foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 16, height: 16)
+        .accessibilityHidden(true)
     }
 }
 
