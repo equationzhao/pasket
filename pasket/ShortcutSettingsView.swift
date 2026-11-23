@@ -973,7 +973,7 @@ private struct HistoryRetentionSettingsView: View {
                 .padding(12)
                 Divider().opacity(0.35)
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Apply to save these settings. History limits are checked at startup, after writes, every hour, and after waking from sleep. Original files stay untouched.")
+                    Text("Apply to save these settings. History limits apply to unpinned entries at startup, after writes, every hour, and after waking from sleep.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ImageIO
 import OSLog
@@ -8,7 +9,8 @@ nonisolated enum ClipboardMutation: Sendable {
     case touch(UUID, Date)
     case delete(UUID)
     case deleteFingerprint(String)
-    case deleteUnavailableFiles
+    case deleteUnavailableFiles(includingPinned: Bool)
+    case setPinned(UUID, Bool)
     case clear
     case completeImageImport(UUID)
     case settings(isPaused: Bool)
@@ -30,6 +32,7 @@ nonisolated struct ClipboardResultSnapshot: Sendable {
 
 nonisolated enum ClipboardStorageError: LocalizedError {
     case unsupportedVersion, invalidImage, largeImage, invalidHistory, missingImage, imageBudget, invalidRetention
+    case unsupportedFileExport, largeText, largeTextData, tooManyItems, missingSnapshot, unavailablePasteFormat
 
     var errorDescription: String? {
         switch self {
@@ -40,6 +43,26 @@ nonisolated enum ClipboardStorageError: LocalizedError {
         case .missingImage: "This saved image is unavailable."
         case .imageBudget: "Image not saved: the image and its thumbnail exceed your image storage limit."
         case .invalidRetention: "History limits must be positive whole numbers or Unlimited."
+        case .unsupportedFileExport: "Choose a text, link, email, or image entry to save."
+        case .largeText: "Text exceeds the 2,000-character history limit."
+        case .largeTextData: "Text formats exceed the 2 MiB limit per copy."
+        case .tooManyItems: "Copy up to 100 items at a time."
+        case .missingSnapshot: "The original clipboard formats for this entry are unavailable."
+        case .unavailablePasteFormat: "This paste format is unavailable for the selected entry."
+        }
+    }
+}
+
+nonisolated enum ClipboardEditError: LocalizedError {
+    case unavailable, changed, duplicate, invalidText, textBudget
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: "This entry is unavailable."
+        case .changed: "This entry changed. Reopen the editor to load its latest text."
+        case .duplicate: "An entry with this text already exists."
+        case .invalidText: "Enter between 1 and \(ClipboardLimits.textCharacters.formatted()) characters of text."
+        case .textBudget: "This edit exceeds your history text limit."
         }
     }
 }
@@ -63,8 +86,8 @@ actor ClipboardPersistence {
     func load() throws -> ClipboardHistory {
         let database = try openDatabase()
         var history = try settings(in: database)
-        try database.query("SELECT payload FROM items ORDER BY copied_at DESC, position DESC, id") {
-            history.items.append(try JSONDecoder().decode(ClipboardItem.self, from: ClipboardDatabase.data($0, 0)))
+        try database.query("SELECT payload, is_pinned FROM items ORDER BY is_pinned DESC, copied_at DESC, position DESC, id") {
+            history.items.append(try decodeItem($0, pinnedColumn: 1))
         }
         return history
     }
@@ -122,8 +145,11 @@ actor ClipboardPersistence {
                 case .delete(let id): try database.execute("DELETE FROM items WHERE id = ?", [.text(id.uuidString)])
                 case .deleteFingerprint(let fingerprint):
                     try database.execute("DELETE FROM items WHERE fingerprint = ?", [.text(fingerprint)])
-                case .deleteUnavailableFiles:
-                    for id in try unavailableFileIDs(in: database) {
+                case .setPinned(let id, let pinned):
+                    try database.execute("UPDATE items SET is_pinned = ? WHERE id = ?",
+                                         [.integer(pinned ? 1 : 0), .text(id.uuidString)])
+                case .deleteUnavailableFiles(let includingPinned):
+                    for id in try unavailableFileIDs(in: database, includingPinned: includingPinned) {
                         try database.execute("DELETE FROM items WHERE id = ?", [.text(id)])
                     }
                 case .clear: try database.execute("DELETE FROM items")
@@ -148,6 +174,33 @@ actor ClipboardPersistence {
     }
 
     func item(_ id: UUID) throws -> ClipboardItem? { try item(id, in: openDatabase()) }
+
+    func editText(_ text: String, for id: UUID, matching fingerprint: String) throws {
+        guard text.prefix(ClipboardLimits.textCharacters + 1).count <= ClipboardLimits.textCharacters,
+              text.contains(where: { !$0.isWhitespace }) else { throw ClipboardEditError.invalidText }
+        let database = try openDatabase()
+        var removedSnapshot = false
+        try database.transaction {
+            guard let original = try item(id, in: database), original.canEditText else { throw ClipboardEditError.unavailable }
+            guard original.fingerprint == fingerprint else { throw ClipboardEditError.changed }
+            guard text != original.content else { return }
+            var edited = ClipboardItem.text(text, source: original.source, at: original.copiedAt)
+            edited.id = id
+            guard try database.integer("SELECT COUNT(*) FROM items WHERE fingerprint = ? AND id != ?",
+                                       [.text(edited.fingerprint), .text(id.uuidString)]) == 0 else {
+                throw ClipboardEditError.duplicate
+            }
+            if !original.isPinned, edited.textByteCount > original.textByteCount,
+               let limit = try settings(in: database).retention?.maximumTextBytes {
+                let otherBytes = try database.integer("SELECT COALESCE(SUM(text_bytes), 0) FROM items WHERE is_pinned = 0 AND id != ?",
+                                                      [.text(id.uuidString)])
+                guard edited.textByteCount <= limit - otherBytes else { throw ClipboardEditError.textBudget }
+            }
+            try upsert(edited, in: database, preservingPosition: true)
+            removedSnapshot = original.snapshot != nil
+        }
+        if removedSnapshot { try didCommit(in: database) }
+    }
 
     private func imageTextColumn(for mode: ClipboardImageText.Mode) -> String {
         mode == .accurate ? "image_text" : "fast_image_text"
@@ -204,7 +257,7 @@ actor ClipboardPersistence {
         let imageText = includesImageText && !search.isEmpty ? imageTextColumn(for: imageTextMode) : "NULL"
         let (clause, values, ordering) = try resultQuery(search, filter: filter, imageText: imageText, in: database)
         var items: [ClipboardItem] = []
-        try database.query("SELECT summary, \(imageText) FROM items" + clause + " ORDER BY " + ordering + " LIMIT ? OFFSET ?",
+        try database.query("SELECT summary, \(imageText), is_pinned FROM items" + clause + " ORDER BY " + ordering + " LIMIT ? OFFSET ?",
                            values + [.integer(max(0, limit)), .integer(max(0, offset))]) {
             items.append(try decodeSummary($0, search: search))
         }
@@ -233,13 +286,14 @@ actor ClipboardPersistence {
         let search = ClipboardSearch(query, level: level)
         let imageText = includesImageText && !search.isEmpty ? imageTextColumn(for: imageTextMode) : "NULL"
         let (clause, values, ordering) = try resultQuery(search, filter: filter, imageText: imageText, in: database)
-        try database.query("SELECT id, copied_at FROM items" + clause + " ORDER BY " + ordering, values) { row in
+        try database.query("SELECT id, copied_at, is_pinned FROM items" + clause + " ORDER BY " + ordering, values) { row in
             try Task.checkCancellation()
             guard let id = UUID(uuidString: ClipboardDatabase.text(row, 0)) else {
                 throw ClipboardStorageError.invalidHistory
             }
             references.append(ClipboardHistoryReference(id: id,
-                copiedAt: Date(timeIntervalSinceReferenceDate: ClipboardDatabase.real(row, 1))))
+                copiedAt: Date(timeIntervalSinceReferenceDate: ClipboardDatabase.real(row, 1)),
+                isPinned: ClipboardDatabase.int(row, 2) != 0))
         }
         let retained = references.filter { retainingIDs.contains($0.id) }.map(\.id)
         let requested = Array(Set(references.prefix(max(0, limit)).map(\.id) + retained))
@@ -248,7 +302,7 @@ actor ClipboardPersistence {
         for start in stride(from: 0, to: requested.count, by: 500) {
             let ids = requested[start..<min(start + 500, requested.count)]
             let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
-            try database.query("SELECT summary, \(imageText) FROM items WHERE id IN (" + placeholders + ")",
+            try database.query("SELECT summary, \(imageText), is_pinned FROM items WHERE id IN (" + placeholders + ")",
                                ids.map { .text($0.uuidString) }) { row in
                 let item = try decodeSummary(row, search: search)
                 summaries[item.id] = item
@@ -263,7 +317,7 @@ actor ClipboardPersistence {
     }
 
     private func decodeSummary(_ row: OpaquePointer, search: ClipboardSearch) throws -> ClipboardItem {
-        var item = try JSONDecoder().decode(ClipboardItem.self, from: ClipboardDatabase.data(row, 0))
+        var item = try decodeItem(row, pinnedColumn: 2)
         let text = ClipboardDatabase.text(row, 1)
         if !text.isEmpty, ClipboardSearch(search.query, level: .literal).rank(item) == 0 {
             item.imageTextMatch = search.imageTextSnippet(text)
@@ -284,7 +338,7 @@ actor ClipboardPersistence {
             predicates.append(rank + " > 0")
         }
         let clause = predicates.isEmpty ? "" : " WHERE " + predicates.joined(separator: " AND ")
-        let ranking = search.isEmpty ? "" : rank + " DESC, "
+        let ranking = search.isEmpty ? "is_pinned DESC, " : rank + " DESC, "
         return (clause, values, ranking + "copied_at DESC, position DESC, id")
     }
 
@@ -311,7 +365,7 @@ actor ClipboardPersistence {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let database = try ClipboardDatabase(url: databaseURL)
         let version = try database.integer("PRAGMA user_version")
-        guard version <= 3 else { throw ClipboardStorageError.unsupportedVersion }
+        guard version <= 4 else { throw ClipboardStorageError.unsupportedVersion }
         guard version >= 0 else { throw ClipboardStorageError.invalidHistory }
         if version == 0 {
             guard try database.integer("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'") == 0 else {
@@ -330,22 +384,25 @@ actor ClipboardPersistence {
                         copied_at REAL NOT NULL, position INTEGER NOT NULL, has_image_preview INTEGER NOT NULL,
                         text_bytes INTEGER NOT NULL, image_bytes INTEGER NOT NULL,
                         image_name TEXT NOT NULL, thumbnail_name TEXT NOT NULL, summary BLOB NOT NULL, payload BLOB NOT NULL,
-                        image_text TEXT, fast_image_text TEXT
+                        image_text TEXT, fast_image_text TEXT, is_pinned INTEGER NOT NULL DEFAULT 0
                     )
                     """)
                 try database.execute("CREATE INDEX items_recency ON items(copied_at DESC, position DESC, id)")
                 try database.execute("CREATE INDEX items_kind_recency ON items(kind, copied_at DESC, position DESC, id)")
+                try createPinnedIndex(in: database)
                 try database.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK(id = 1), payload BLOB NOT NULL)")
                 for item in history.items.reversed() { try upsert(item, in: database) }
                 try writeSettings(history, in: database)
                 try enforceLimits(in: database)
-                try database.execute("PRAGMA user_version = 3")
+                try database.execute("PRAGMA user_version = 4")
             }
-        } else if version < 3 {
+        } else if version < 4 {
             try database.transaction {
                 if version == 1 { try database.execute("ALTER TABLE items ADD COLUMN image_text TEXT") }
-                try database.execute("ALTER TABLE items ADD COLUMN fast_image_text TEXT")
-                try database.execute("PRAGMA user_version = 3")
+                if version < 3 { try database.execute("ALTER TABLE items ADD COLUMN fast_image_text TEXT") }
+                try database.execute("ALTER TABLE items ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
+                try createPinnedIndex(in: database)
+                try database.execute("PRAGMA user_version = 4")
             }
         }
         // Only collect media after the schema and any legacy import have committed.
@@ -355,6 +412,10 @@ actor ClipboardPersistence {
         }
         hasOpenedDatabase = true
         return database
+    }
+
+    private func createPinnedIndex(in database: ClipboardDatabase) throws {
+        try database.execute("CREATE INDEX items_pinned_recency ON items(is_pinned DESC, copied_at DESC, position DESC, id)")
     }
 
     private func settings(in database: ClipboardDatabase) throws -> ClipboardHistory {
@@ -375,13 +436,19 @@ actor ClipboardPersistence {
 
     private func item(_ id: UUID, in database: ClipboardDatabase) throws -> ClipboardItem? {
         var item: ClipboardItem?
-        try database.query("SELECT payload FROM items WHERE id = ?", [.text(id.uuidString)]) {
-            item = try JSONDecoder().decode(ClipboardItem.self, from: ClipboardDatabase.data($0, 0))
+        try database.query("SELECT payload, is_pinned FROM items WHERE id = ?", [.text(id.uuidString)]) {
+            item = try decodeItem($0, pinnedColumn: 1)
         }
         return item
     }
 
-    private func upsert(_ incoming: ClipboardItem, in database: ClipboardDatabase) throws {
+    private func decodeItem(_ row: OpaquePointer, pinnedColumn: Int32) throws -> ClipboardItem {
+        var item = try JSONDecoder().decode(ClipboardItem.self, from: ClipboardDatabase.data(row, 0))
+        item.isPinned = ClipboardDatabase.int(row, pinnedColumn) != 0
+        return item
+    }
+
+    private func upsert(_ incoming: ClipboardItem, in database: ClipboardDatabase, preservingPosition: Bool = false) throws {
         var item = incoming
         try database.query("SELECT id FROM items WHERE fingerprint = ?", [.text(item.fingerprint)]) {
             guard let id = UUID(uuidString: ClipboardDatabase.text($0, 0)) else { throw ClipboardStorageError.invalidHistory }
@@ -390,16 +457,22 @@ actor ClipboardPersistence {
         try validate(ClipboardHistory(items: [item]))
         if item.id != incoming.id {
             // Refreshed bookmarks can make two previously distinct paths converge.
+            try database.execute("""
+                UPDATE items SET is_pinned = 1 WHERE id = ?
+                AND EXISTS (SELECT 1 FROM items WHERE id = ? AND is_pinned = 1)
+                """, [.text(item.id.uuidString), .text(incoming.id.uuidString)])
             try database.execute("DELETE FROM items WHERE id = ?", [.text(incoming.id.uuidString)])
         }
-        let position = try database.integer("SELECT COALESCE(MAX(position), 0) + 1 FROM items")
+        let position = preservingPosition
+            ? try database.integer("SELECT position FROM items WHERE id = ?", [.text(item.id.uuidString)])
+            : try database.integer("SELECT COALESCE(MAX(position), 0) + 1 FROM items")
         var summary = item
         summary.content = String(item.content.prefix(500))
         let encoder = JSONEncoder()
         try database.execute("""
             INSERT INTO items (id, fingerprint, kind, title, content, source_name, source_bundle, copied_at,
-                position, has_image_preview, text_bytes, image_bytes, image_name, thumbnail_name, summary, payload)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                position, has_image_preview, text_bytes, image_bytes, image_name, thumbnail_name, summary, payload, is_pinned)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 fingerprint=excluded.fingerprint, kind=excluded.kind, title=excluded.title, content=excluded.content,
                 source_name=excluded.source_name, source_bundle=excluded.source_bundle, copied_at=excluded.copied_at,
@@ -413,7 +486,7 @@ actor ClipboardPersistence {
                   .text(item.source.name), .text(item.source.bundleIdentifier ?? ""), .real(item.copiedAt.timeIntervalSinceReferenceDate),
                   .integer(position), .integer(item.hasImagePreview ? 1 : 0), .integer(item.textByteCount), .integer(item.imageByteCount),
                   .text(item.image?.fileName ?? ""), .text(item.image?.thumbnailName ?? ""),
-                  .blob(try encoder.encode(summary)), .blob(try encoder.encode(item))])
+                  .blob(try encoder.encode(summary)), .blob(try encoder.encode(item)), .integer(item.isPinned ? 1 : 0)])
     }
 
     private func enforceLimits(in database: ClipboardDatabase) throws {
@@ -421,9 +494,10 @@ actor ClipboardPersistence {
         try delete(retentionPlan(retention, in: database, now: Date()), in: database)
     }
 
-    private func unavailableFileIDs(in database: ClipboardDatabase) throws -> Set<String> {
+    private func unavailableFileIDs(in database: ClipboardDatabase, includingPinned: Bool) throws -> Set<String> {
         var ids: Set<String> = []
-        try database.query("SELECT payload FROM items WHERE kind = ?", [.text(ClipboardKind.file.rawValue)]) {
+        let condition = includingPinned ? "" : " AND is_pinned = 0"
+        try database.query("SELECT payload FROM items WHERE kind = ?" + condition, [.text(ClipboardKind.file.rawValue)]) {
             let item = try JSONDecoder().decode(ClipboardItem.self, from: ClipboardDatabase.data($0, 0))
             if !ClipboardFileAccess.areAvailable(item.files) { ids.insert(item.id.uuidString) }
         }
@@ -465,14 +539,15 @@ actor ClipboardPersistence {
                 length(payload) + length(summary) + length(CAST(content AS BLOB))
                 + length(CAST(title AS BLOB)) + length(CAST(source_name AS BLOB))
                 + length(CAST(source_bundle AS BLOB)) + length(CAST(fingerprint AS BLOB)),
-                image_name, thumbnail_name
+                image_name, thumbnail_name, is_pinned, fingerprint
             FROM items ORDER BY copied_at DESC, position DESC, id
             """) { row in
             entries.append(ClipboardRetentionEntry(
                 id: ClipboardDatabase.text(row, 0), copiedAt: Date(timeIntervalSinceReferenceDate: ClipboardDatabase.real(row, 1)),
                 textBytes: ClipboardDatabase.int(row, 2), imageBytes: ClipboardDatabase.int(row, 3),
                 recordBytes: ClipboardDatabase.int(row, 4), imageName: ClipboardDatabase.text(row, 5),
-                thumbnailName: ClipboardDatabase.text(row, 6)))
+                thumbnailName: ClipboardDatabase.text(row, 6), isPinned: ClipboardDatabase.int(row, 7) != 0,
+                snapshotName: ClipboardPasteboardSnapshot.storageName(for: ClipboardDatabase.text(row, 8))))
         }
         let cutoff = retention.maximumAgeDays.map { now.addingTimeInterval(-Double($0) * 86_400) }
         var remainingText = retention.maximumTextBytes ?? Int.max
@@ -483,26 +558,26 @@ actor ClipboardPersistence {
         var deleted: [ClipboardRetentionEntry] = []
         var survivingImages: Set<String> = []
         for entry in entries {
-            var remove = cutoff.map { entry.copiedAt < $0 } ?? false
-            if !remove, entry.textBytes > 0 {
-                textExceeded = textExceeded || entry.textBytes > remainingText
-                remove = textExceeded
-                if !remove { remainingText -= entry.textBytes }
-            }
-            if !remove, entry.imageBytes > 0 {
-                imagesExceeded = imagesExceeded || entry.imageBytes > remainingImages
-                remove = imagesExceeded
-                if !remove { remainingImages -= entry.imageBytes }
-            }
-            if !remove {
-                remove = remainingItems == 0
-                if !remove { remainingItems -= 1 }
+            var remove = false
+            if !entry.isPinned {
+                remove = cutoff.map { entry.copiedAt < $0 } ?? false
+                if !remove, entry.textBytes > 0 {
+                    textExceeded = textExceeded || entry.textBytes > remainingText
+                    remove = textExceeded
+                    if !remove { remainingText -= entry.textBytes }
+                }
+                if !remove, entry.imageBytes > 0 {
+                    imagesExceeded = imagesExceeded || entry.imageBytes > remainingImages
+                    remove = imagesExceeded
+                    if !remove { remainingImages -= entry.imageBytes }
+                }
+                if !remove {
+                    remove = remainingItems == 0
+                    if !remove { remainingItems -= 1 }
+                }
             }
             if remove { deleted.append(entry) }
-            else if !entry.imageName.isEmpty {
-                survivingImages.insert(entry.imageName)
-                survivingImages.insert(entry.thumbnailName)
-            }
+            else { survivingImages.formUnion(entry.mediaNames) }
         }
         // Database records contain bookmarks and metadata, never the referenced original file bytes.
         // Shared or in-flight image files will not be released by this cleanup.
@@ -511,7 +586,7 @@ actor ClipboardPersistence {
         var bytes = 0
         for entry in deleted {
             bytes += entry.recordBytes
-            for name in [entry.imageName, entry.thumbnailName] where isManagedImageName(name) {
+            for name in entry.mediaNames where isManagedImageName(name) {
                 if countedImages.insert(name).inserted,
                    let size = try? mediaDirectory.appendingPathComponent(name).resourceValues(forKeys: [.fileSizeKey]).fileSize {
                     bytes += size
@@ -529,9 +604,18 @@ actor ClipboardPersistence {
 
     private func didCommit(in database: ClipboardDatabase) throws {
         var names: Set<String> = []
-        try database.query("SELECT image_name, thumbnail_name FROM items WHERE image_name != ''") {
-            names.insert(ClipboardDatabase.text($0, 0))
-            names.insert(ClipboardDatabase.text($0, 1))
+        try database.query("""
+            SELECT image_name, thumbnail_name, fingerprint FROM items
+            WHERE image_name != '' OR fingerprint LIKE 'snapshot:%'
+            """) {
+            let imageName = ClipboardDatabase.text($0, 0)
+            if !imageName.isEmpty {
+                names.insert(imageName)
+                names.insert(ClipboardDatabase.text($0, 1))
+            }
+            if let snapshot = ClipboardPasteboardSnapshot.storageName(for: ClipboardDatabase.text($0, 2)) {
+                names.insert(snapshot)
+            }
         }
         committedImageNames = names
         try cleanImages()
@@ -544,19 +628,126 @@ actor ClipboardPersistence {
         }
     }
 
+    func importSnapshot(_ original: ClipboardPasteboardSnapshot, source: ClipboardSource, at date: Date) throws -> ClipboardItem? {
+        var snapshot = original
+        let text = snapshot.items.map(ClipboardPasteboardSnapshot.readPlainText)
+        let primaryImage = snapshot.items.indices.lazy.compactMap { index in
+            let representations = snapshot.items[index]
+            let preferred = [UTType.gif.identifier, UTType.png.identifier]
+            let imageIndex = preferred.lazy.compactMap { type in
+                representations.firstIndex { $0.type == type }
+            }.first ?? representations.firstIndex(where: \.isImage)
+            return imageIndex.map { (index, $0) }
+        }.first
+        var item: ClipboardItem
+        if let (itemIndex, representationIndex) = primaryImage {
+            let representation = snapshot.items[itemIndex][representationIndex]
+            guard let data = representation.data else { throw ClipboardStorageError.invalidImage }
+            item = try importImage(data, source: source, at: date)
+            let storedType: UTType = item.image?.isGIF == true ? .gif : .png
+            if representation.type == storedType.identifier, item.fingerprint == "image:" + ClipboardItem.digest(data) {
+                if snapshot.items.count == 1, snapshot.items[0].count == 1 { return item }
+                snapshot.items[itemIndex][representationIndex].data = nil
+            }
+        } else {
+            let urls = snapshot.items.map(ClipboardPasteboardSnapshot.readURL)
+            let content = zip(urls, text).compactMap { $0 ?? $1 }.joined(separator: "\n")
+            guard content.prefix(ClipboardLimits.textCharacters + 1).count <= ClipboardLimits.textCharacters else {
+                throw ClipboardStorageError.largeText
+            }
+            let hasText = content.contains { !$0.isWhitespace }
+            if snapshot.items.count == 1, snapshot.items[0].map(\.pasteboardType) == [.string] {
+                return hasText ? .text(content, source: source, at: date) : nil
+            }
+            let types = Set(snapshot.items.flatMap { $0.map(\.pasteboardType) })
+            guard hasText || types.contains(.html) || types.contains(.rtf) else { return nil }
+            item = .text(content, source: source, at: date)
+            if snapshot.items.count == 1, let url = urls[0] {
+                item.kind = .link
+                let label = ClipboardPasteboardSnapshot.readString(ClipboardPasteboardSnapshot.urlName, in: snapshot.items[0])
+                    ?? text[0] ?? url
+                item.title = String((label.isEmpty ? url : label).prefix(120))
+            } else if !hasText {
+                item.title = types.contains(.html) ? "HTML" : "RTF"
+            }
+        }
+        do {
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            let data = try encoder.encode(snapshot)
+            let fingerprint = snapshot.fingerprint(primaryImageName: item.image?.fileName)
+            guard let name = ClipboardPasteboardSnapshot.storageName(for: fingerprint) else {
+                throw ClipboardStorageError.invalidHistory
+            }
+            let representations = snapshot.items.flatMap { $0 }
+            let imageBytes = representations.filter(\.isImage).reduce(0) { $0 + ($1.data?.count ?? 0) }
+            let textBytes = representations.filter { !$0.isImage }.reduce(0) { $0 + ($1.data?.count ?? 0) }
+            let overhead = max(0, data.count - imageBytes - textBytes)
+            item.fingerprint = fingerprint
+            item.snapshot = ClipboardSnapshotInfo(formats: snapshot.availableFormats(plainText: text),
+                textBytes: textBytes + (item.image == nil ? overhead : 0),
+                imageBytes: imageBytes + (item.image == nil ? 0 : overhead),
+                imageCount: snapshot.items.filter { $0.contains(where: \.isImage) }.count)
+            try FileManager.default.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
+            try data.write(to: mediaDirectory.appendingPathComponent(name), options: .atomic)
+            pendingImages[item.id, default: []].insert(name)
+            return item
+        } catch {
+            try discardImportedImage(item)
+            throw error
+        }
+    }
+
+    func loadRepresentations(for item: ClipboardItem, format: ClipboardPasteFormat?) throws
+        -> [[ClipboardPasteboardSnapshot.Representation]] {
+        guard let info = item.snapshot,
+              let name = ClipboardPasteboardSnapshot.storageName(for: item.fingerprint) else {
+            throw ClipboardStorageError.missingSnapshot
+        }
+        if let format, !info.formats.contains(format) { throw ClipboardStorageError.unavailablePasteFormat }
+        let url = mediaDirectory.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: url.path) else { throw ClipboardStorageError.missingSnapshot }
+        let snapshot = try PropertyListDecoder().decode(ClipboardPasteboardSnapshot.self, from: Data(contentsOf: url))
+        var convertedImageBytes = 0
+        return try snapshot.items.map { representations in
+            switch format {
+            case .plainText:
+                guard let text = ClipboardPasteboardSnapshot.readPlainText(in: representations) else {
+                    throw ClipboardStorageError.unavailablePasteFormat
+                }
+                return [.init(.string, data: Data(text.utf8))]
+            case .html: return representations.filter { $0.pasteboardType == .html }
+            case .rtf: return representations.filter { $0.pasteboardType == .rtf }
+            case .url:
+                guard let url = ClipboardPasteboardSnapshot.readURL(in: representations) else {
+                    throw ClipboardStorageError.unavailablePasteFormat
+                }
+                let link = representations.filter { [.URL, ClipboardPasteboardSnapshot.urlName].contains($0.pasteboardType) }
+                return link + [.init(.string, data: Data(url.utf8))]
+            case .png:
+                guard let data = representations.first(where: { $0.pasteboardType == .tiff })?.data else {
+                    throw ClipboardStorageError.unavailablePasteFormat
+                }
+                let (_, image) = try decodeImage(data)
+                let png = try encodePNG(image)
+                convertedImageBytes += png.count
+                guard convertedImageBytes <= ClipboardLimits.imageBytes else { throw ClipboardStorageError.largeImage }
+                return [.init(.png, data: png)]
+            case nil:
+                return try representations.map { representation in
+                    guard representation.data == nil else { return representation }
+                    guard let image = item.image else { throw ClipboardStorageError.missingImage }
+                    return .init(representation.pasteboardType, data: try imageData(image))
+                }
+            }
+        }
+    }
+
     func importImage(_ data: Data, source: ClipboardSource, at date: Date) throws -> ClipboardItem {
-        guard data.count <= ClipboardLimits.imageBytes else { throw ClipboardStorageError.largeImage }
-        guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
-              let (width, height) = imageDimensions(imageSource) else { throw ClipboardStorageError.invalidImage }
-        guard width <= ClipboardLimits.imagePixels / height else { throw ClipboardStorageError.largeImage }
-        let fullSizeOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
-                                              kCGImageSourceThumbnailMaxPixelSize: max(width, height),
-                                              kCGImageSourceCreateThumbnailWithTransform: true,
-                                              kCGImageSourceShouldCache: false]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, fullSizeOptions as CFDictionary)
-        else { throw ClipboardStorageError.invalidImage }
-        let isGIF = CGImageSourceGetType(imageSource) as String? == UTType.gif.identifier
-        let original = isGIF ? data : try encodePNG(image)
+        let (imageSource, image) = try decodeImage(data)
+        let type = CGImageSourceGetType(imageSource) as String?
+        let isGIF = type == UTType.gif.identifier
+        let original = isGIF || type == UTType.png.identifier ? data : try encodePNG(image)
         guard original.count <= ClipboardLimits.imageBytes else { throw ClipboardStorageError.largeImage }
 
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -581,6 +772,20 @@ actor ClipboardPersistence {
         try thumbnailData.write(to: mediaDirectory.appendingPathComponent(payload.thumbnailName), options: .atomic)
         pendingImages[item.id] = [payload.fileName, payload.thumbnailName]
         return item
+    }
+
+    private func decodeImage(_ data: Data) throws -> (CGImageSource, CGImage) {
+        guard data.count <= ClipboardLimits.imageBytes else { throw ClipboardStorageError.largeImage }
+        guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+              let (width, height) = imageDimensions(imageSource) else { throw ClipboardStorageError.invalidImage }
+        guard width <= ClipboardLimits.imagePixels / height else { throw ClipboardStorageError.largeImage }
+        let fullSizeOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                              kCGImageSourceThumbnailMaxPixelSize: max(width, height),
+                                              kCGImageSourceCreateThumbnailWithTransform: true,
+                                              kCGImageSourceShouldCache: false]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, fullSizeOptions as CFDictionary)
+        else { throw ClipboardStorageError.invalidImage }
+        return (imageSource, image)
     }
 
     private func encodePNG(_ image: CGImage) throws -> Data {
@@ -678,6 +883,6 @@ actor ClipboardPersistence {
     }
 
     private func isManagedImageName(_ name: String) -> Bool {
-        name.range(of: #"\A[a-f0-9]{64}\.(?:gif|png|thumb\.png)\z"#, options: .regularExpression) != nil
+        name.range(of: #"\A[a-f0-9]{64}\.(?:gif|png|thumb\.png|pasteboard)\z"#, options: .regularExpression) != nil
     }
 }

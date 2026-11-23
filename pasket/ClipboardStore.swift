@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import OSLog
+import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class ClipboardStore {
@@ -45,6 +46,7 @@ final class ClipboardStore {
     private(set) var imageTextMode: ClipboardImageText.Mode
     private(set) var copiedChangeCount: Int?
     private(set) var isDeletingUnavailableFiles = false
+    private(set) var isChangingPin = false
     private(set) var clipboardAccessDenied = false {
         didSet {
             if !clipboardAccessDenied { systemAccess.dismiss(.clipboard) }
@@ -224,6 +226,11 @@ final class ClipboardStore {
 
     var canCombineSelection: Bool { selectedItems.count == selectedIDs.count && ClipboardBatch.canCombine(selectedItems) }
     var hasMoreItems: Bool { !isDebugMode && items.count < matchingCount }
+
+    var canUseEntryActions: Bool {
+        !isDebugMode && !isLoading && !isSearching && !storageBlocked && !stopRequested
+            && !isCopying && !pasteQueue.isPasting && selectedIDs.count == 1 && selectedItem != nil
+    }
 
     func start() async {
         guard !hasStarted else { return }
@@ -606,7 +613,7 @@ final class ClipboardStore {
               lastAutoRecycleAt.map({ date.timeIntervalSince($0) >= autoRecycleInterval }) ?? true else { return }
         // Reserve the interval before queuing work so rapid dismissals cannot schedule another scan.
         lastAutoRecycleAt = date
-        persist([.deleteUnavailableFiles])
+        persist([.deleteUnavailableFiles(includingPinned: false)])
     }
 
     #if DEBUG
@@ -720,6 +727,84 @@ final class ClipboardStore {
         navigationTask = Task { await loadHistory(in: first..<(last + 1)) }
     }
 
+    func toggleSelectedPin() async {
+        guard canUseEntryActions, !isChangingPin, let item = selectedItem else { return }
+        isChangingPin = true
+        defer { isChangingPin = false }
+        persist([.setPinned(item.id, !item.isPinned)],
+                feedback: (item.isPinned ? "Entry Unpinned" : "Entry Pinned", .pin))
+        await saveTask?.value
+    }
+
+    func loadHistoryEntry(_ id: UUID) async throws -> ClipboardItem {
+        await saveTask?.value
+        if let storageError { throw ClipboardDatabaseError(message: storageError) }
+        guard !storageBlocked, !stopRequested, let item = try await persistence.item(id) else {
+            throw ClipboardEditError.unavailable
+        }
+        return item
+    }
+
+    func editHistoryText(_ text: String, for item: ClipboardItem) async throws {
+        await saveTask?.value
+        if let storageError { throw ClipboardDatabaseError(message: storageError) }
+        guard !storageBlocked, !stopRequested else { throw ClipboardEditError.unavailable }
+        try await persistence.editText(text, for: item.id, matching: item.fingerprint)
+        scheduleReload(preservingSelection: true)
+    }
+
+    struct FileExport {
+        let data: Data
+        let contentType: UTType
+        let suggestedName: String
+    }
+
+    func prepareFileExport(for id: UUID) async throws -> FileExport {
+        let item = try await loadHistoryEntry(id)
+        if let image = item.image {
+            return FileExport(data: try await persistence.imageData(image),
+                              contentType: image.isGIF ? .gif : .png,
+                              suggestedName: "image-\(image.width)x\(image.height)")
+        }
+        guard item.canEditText else { throw ClipboardStorageError.unsupportedFileExport }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HHmm"
+        return FileExport(data: Data(item.content.utf8), contentType: .plainText,
+                          suggestedName: "clipboard-\(formatter.string(from: item.copiedAt))")
+    }
+
+    struct ShareItems {
+        var items: [Any]
+        var files: ClipboardFileAccess.ResolvedFiles? = nil
+    }
+
+    func loadShareItems(for id: UUID) async throws -> ShareItems {
+        let item = try await loadHistoryEntry(id)
+        switch item.kind {
+        case .text, .email:
+            return ShareItems(items: [item.content])
+        case .link:
+            let link = item.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let url = URL(string: link) { return ShareItems(items: [url]) }
+            return ShareItems(items: [item.content])
+        case .file:
+            let files = try ClipboardFileAccess.ResolvedFiles(item.files)
+            return ShareItems(items: files.urls, files: files)
+        case .image:
+            guard let image = item.image else { throw ClipboardStorageError.missingImage }
+            let data = try await persistence.imageData(image)
+            let type: UTType = image.isGIF ? .gif : .png
+            let provider = NSItemProvider()
+            provider.suggestedName = image.isGIF ? "Clipboard Image.gif" : "Clipboard Image.png"
+            provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .all) { completion in
+                completion(data, nil)
+                return nil
+            }
+            return ShareItems(items: [provider])
+        }
+    }
+
     func delete(_ id: UUID) {
         deleteItems([id])
     }
@@ -777,7 +862,7 @@ final class ClipboardStore {
         // Finish existing captures so an older capture cannot restore a removed entry.
         await flush()
         guard !isDebugMode, !storageBlocked, storageError == nil else { return }
-        persist([.deleteUnavailableFiles])
+        persist([.deleteUnavailableFiles(includingPinned: true)])
         await saveTask?.value
         guard storageError == nil else { return }
         await refreshFileAvailability()
@@ -812,10 +897,12 @@ final class ClipboardStore {
     }
 
     @discardableResult
-    func copySelection(separator: ClipboardTextSeparator = .newline, reversed: Bool = false) async -> Bool {
+    func copySelection(separator: ClipboardTextSeparator = .newline, reversed: Bool = false,
+                       format: ClipboardPasteFormat? = nil) async -> Bool {
         guard !pasteQueue.isPasting else { return false }
+        guard format == nil || selectedIDs.count == 1 else { return false }
         pasteQueue.cancel()
-        return await copyItems(separator: separator, reversed: reversed)
+        return await copyItems(separator: separator, reversed: reversed, format: format)
     }
 
     func copySelectionToClipboard(separator: ClipboardTextSeparator, reversed: Bool) async {
@@ -831,7 +918,8 @@ final class ClipboardStore {
     }
 
     private func copyItems(_ requestedIDs: [UUID]? = nil, separator: ClipboardTextSeparator = .newline,
-                           reversed: Bool = false, requestIsCurrent: () -> Bool = { true }) async -> Bool {
+                           reversed: Bool = false, format: ClipboardPasteFormat? = nil,
+                           requestIsCurrent: () -> Bool = { true }) async -> Bool {
         guard !isDebugMode, !isCopying, !isLoading else { return false }
         copiedChangeCount = nil
         isCopying = true
@@ -880,24 +968,19 @@ final class ClipboardStore {
                 return false
             }
             failingItem = first
-            switch first.kind {
-            case .image:
-                var images: [NSPasteboardItem] = []
+            if format != nil || first.kind == .image || (fullItems.count == 1 && first.snapshot != nil) {
+                var objects: [NSPasteboardItem] = []
                 for item in fullItems {
                     failingItem = item
-                    guard let image = item.image else { throw ClipboardStorageError.missingImage }
-                    let data = try await persistence.imageData(image)
+                    let items = try await loadPasteboardItems(for: item, format: format)
                     guard isCurrent() else { return false }
-                    let representation = NSPasteboardItem()
-                    let type: NSPasteboard.PasteboardType = image.isGIF ? .gifImage : .png
-                    guard representation.setData(data, forType: type) else { throw CocoaError(.fileWriteUnknown) }
-                    images.append(representation)
+                    objects.append(contentsOf: items)
                 }
-                guard isCurrent() else { return false }
+                guard !objects.isEmpty else { throw CocoaError(.fileWriteUnknown) }
                 pasteboard.clearContents()
-                guard pasteboard.writeObjects(images) else { throw CocoaError(.fileWriteUnknown) }
+                guard pasteboard.writeObjects(objects) else { throw CocoaError(.fileWriteUnknown) }
                 copiedChangeCount = pasteboard.changeCount
-            case .file:
+            } else if first.kind == .file {
                 try ClipboardFileAccess.withResolvedFiles(fullItems.flatMap(\.files)) { urls, updatedFiles in
                     pasteboard.clearContents()
                     guard pasteboard.writeObjects(urls as [NSURL]) else { throw CocoaError(.fileWriteUnknown) }
@@ -909,7 +992,7 @@ final class ClipboardStore {
                         offset = end
                     }
                 }
-            default:
+            } else {
                 pasteboard.clearContents()
                 let text = fullItems.map(\.content).joined(separator: separator.value)
                 guard pasteboard.setString(text, forType: .string) else { throw CocoaError(.fileWriteUnknown) }
@@ -937,13 +1020,35 @@ final class ClipboardStore {
             return true
         } catch {
             monitor.checkpoint()
-            if fullItems.count == 1, let item = failingItem, item.kind == .file || item.kind == .image {
+            if format == nil, fullItems.count == 1, let item = failingItem, item.kind == .file || item.kind == .image {
                 unavailableItems.insert(item.id)
             }
             copyError = failingItem?.kind == .file
                 ? "A file is unavailable. Copy the original files again or remove the unavailable entry."
                 : "Could not copy this item. \(error.localizedDescription)"
             return false
+        }
+    }
+
+    private func loadPasteboardItems(for item: ClipboardItem, format: ClipboardPasteFormat?) async throws -> [NSPasteboardItem] {
+        let representations: [[ClipboardPasteboardSnapshot.Representation]]
+        if item.snapshot != nil {
+            representations = try await persistence.loadRepresentations(for: item, format: format)
+        } else {
+            guard format == nil else { throw ClipboardStorageError.unavailablePasteFormat }
+            guard let image = item.image else { throw ClipboardStorageError.missingImage }
+            let data = try await persistence.imageData(image)
+            representations = [[.init(image.isGIF ? .gifImage : .png, data: data)]]
+        }
+        return try representations.map { representations in
+            let object = NSPasteboardItem()
+            guard !representations.isEmpty else { throw CocoaError(.fileWriteUnknown) }
+            for representation in representations {
+                guard let data = representation.data, object.setData(data, forType: representation.pasteboardType) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+            }
+            return object
         }
     }
 
@@ -1116,17 +1221,16 @@ final class ClipboardStore {
             do {
                 let item: ClipboardItem
                 switch capture {
-                case let .text(text, source, date):
-                    item = ClipboardItem.text(text, source: source, at: date)
-                case let .image(data, source, date):
-                    item = try await persistence.importImage(data, source: source, at: date)
+                case let .snapshot(snapshot, source, date):
+                    guard let imported = try await persistence.importSnapshot(snapshot, source: source, at: date) else { return }
+                    item = imported
                 case let .files(files, source, date):
                     item = ClipboardItem(kind: .file, title: Self.fileTitle(files), content: files.map(\.path).joined(separator: "\n"),
                                          source: source, copiedAt: date, fingerprint: Self.fileFingerprint(files), files: files)
                 }
                 let deletedAfterCapture = deletionCutoffs[item.fingerprint].map { item.copiedAt <= $0 } ?? false
                 guard generation == captureGeneration, !isPaused, !deletedAfterCapture else {
-                    if item.image != nil { try await persistence.discardImportedImage(item) }
+                    if item.image != nil || item.snapshot != nil { try await persistence.discardImportedImage(item) }
                     return
                 }
                 if item.image != nil, !needsRetentionReview,
@@ -1146,7 +1250,9 @@ final class ClipboardStore {
         copyStatistics.recordEvent(at: item.copiedAt)
         var recent = item
         if let existing = items.firstIndex(where: { $0.fingerprint == item.fingerprint }) {
-            recent.id = items.remove(at: existing).id
+            let previous = items.remove(at: existing)
+            recent.id = previous.id
+            recent.isPinned = previous.isPinned
         }
         // Only external captures enter a batch; pasting old history also updates copiedAt.
         recentCopies.record(recent.id, at: recent.copiedAt)
@@ -1162,7 +1268,8 @@ final class ClipboardStore {
         items.insert(recent, at: 0)
         setNotice(nil)
         reconcileSelection()
-        persist([.upsert(recent)] + (item.image == nil ? [] : [.completeImageImport(item.id)]))
+        let hasMedia = item.image != nil || item.snapshot != nil
+        persist([.upsert(recent)] + (hasMedia ? [.completeImageImport(item.id)] : []))
     }
 
     private func pruneCaches() {

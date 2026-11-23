@@ -171,8 +171,8 @@ header controls retain their regular geometry.
 History-limit inputs are 108 by 26, with 8-point horizontal padding, regular-weight
 13-point monospaced values, and the existing 11-point units. Their compact outline reduces
 visual weight beside the two-line labels; row insets and explanation spacing stay unchanged.
-Use `PasketButtonStyle(isProminent: true)` for the History Apply button, matching other
-primary actions such as Paste. It uses the standard small sizing: minimum height 26,
+Use `PasketButtonStyle(isProminent: true)` for the History Apply button. It uses the
+standard small sizing: minimum height 26,
 horizontal padding 9, and a 12-point regular label, matching Restore Defaults in height.
 
 Custom menu items have a minimum height of 32 and 8-point horizontal content padding.
@@ -233,8 +233,10 @@ Use `ShortcutKeycap` for both shortcut groups and inline navigation hints. Each 
 12-point medium monospaced text, a minimum content width of 12, horizontal padding of 5,
 height 22, the compact shape, a primary fill at 0.045 opacity, and a primary border at 0.08.
 `ShortcutKeycaps` groups these with a 4-point gap and a combined accessible shortcut name.
-The Liquid Glass footer uses compact keycaps with 11-point labels, a 10-point minimum
-label width, 3-point horizontal padding, a 16-point height, and a 3-point group gap.
+The Liquid Glass footer and the Actions menu use compact keycaps with 11-point labels,
+a 10-point minimum label width, 3-point horizontal padding, a 16-point height, and a 3-point
+group gap. Give each modifier and the main key its own cap. Longer names such as Page Up
+stay in one cap.
 
 Keep specialized emphasis intentional. A primary action may differ in fill or weight,
 but equivalent controls should not acquire unrelated sizing or alignment per screen.
@@ -335,10 +337,27 @@ The paste menu retains the last active row for Return and continued arrow naviga
 mouse exit, so clearing a hover cannot unexpectedly switch the action to Paste Together.
 The history Actions menu opens above the footer's Actions button or next to a secondary click
 on a history row. Keep its full bounds inside the panel. A secondary click on an unselected row
-selects that row. A click on a selected row focuses it and keeps the whole selection. The Paste &
-Copy group includes Copy to Clipboard for selections that can be combined. Copying shows
-confirmation in the history panel. The menu uses the shared surface and row style, with section
-headings aligned to the 8-point separator and row inset. Keyboard navigation skips disabled
+selects that row. A click on a selected row focuses it and keeps the whole selection.
+Copy to Clipboard is available for selections that can be combined and shows confirmation
+in the history panel. Separate action groups with dividers inset 8 points from the menu rows.
+For a single entry, put Paste as… immediately below Paste in the same action group.
+The row starts collapsed and reveals the available formats in place, using the shared row style
+with a 24-point leading inset, equal to one row icon and its label gap. Keep the other action groups
+visible in the same menu. Return toggles the disclosure, Right Arrow expands it, and Left Arrow
+collapses it when focus is on the disclosure or one of its formats. When the menu exceeds the
+available height, scroll within its surface and keep the keyboard-highlighted action visible.
+The disclosure rotates its chevron by 90 degrees and reveals its rows with a fade and a
+4-point downward offset using the shared menu spring. Reduce Motion applies the new layout immediately.
+Pin Entry, Share, Save as File, and Edit form a single-entry group between copy actions and history
+deletion. Pinning places an entry in the Pinned group at the top of history and adds a small
+pin icon to its row. Automatic cleanup skips pinned entries. Search keeps its existing ranking
+and shows the pin on matching rows. Share opens the macOS sharing picker. Save as File
+opens a native save sheet with the suggested name selected. It appears for a single saved
+image, text, link, or email entry. Use compact shortcut keycaps for Shift-Command-S
+when available. A successful export offers Show in Finder in the footer. Edit appears
+only when the selection can be edited and opens a multiline editor with Cancel and Save
+in its footer.
+The menu uses the shared surface and row style. Keyboard navigation skips disabled
 actions. Return activates the highlighted action and Escape returns focus to search. Keep number
 shortcuts in the paste options menu. Both menus fade and move 6 points using the same spring
 timing as pickers.

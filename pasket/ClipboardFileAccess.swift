@@ -16,28 +16,36 @@ nonisolated enum ClipboardFileAccess {
                              isSecurityScoped: scopedBookmark != nil)
     }
 
-    static func withResolvedFiles<T>(_ files: [ClipboardFile], body: ([URL], [ClipboardFile]) throws -> T) throws -> T {
-        var accessedURLs: [URL] = []
-        defer { accessedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
-        var urls: [URL] = []
-        var updatedFiles: [ClipboardFile] = []
-        for file in files {
-            var stale = false
-            let options: URL.BookmarkResolutionOptions = file.isSecurityScoped == true
-                ? [.withSecurityScope, .withoutUI, .withoutMounting] : [.withoutUI, .withoutMounting]
-            let bookmarked = file.bookmark.flatMap {
-                try? URL(resolvingBookmarkData: $0, options: options, relativeTo: nil, bookmarkDataIsStale: &stale)
+    final class ResolvedFiles {
+        private(set) var urls: [URL] = []
+        private(set) var updatedFiles: [ClipboardFile] = []
+        private var accessedURLs: [URL] = []
+
+        init(_ files: [ClipboardFile]) throws {
+            for file in files {
+                var stale = false
+                let options: URL.BookmarkResolutionOptions = file.isSecurityScoped == true
+                    ? [.withSecurityScope, .withoutUI, .withoutMounting] : [.withoutUI, .withoutMounting]
+                let bookmarked = file.bookmark.flatMap {
+                    try? URL(resolvingBookmarkData: $0, options: options, relativeTo: nil, bookmarkDataIsStale: &stale)
+                }
+                let url = bookmarked ?? URL(fileURLWithPath: file.path)
+                if url.startAccessingSecurityScopedResource() { accessedURLs.append(url) }
+                guard FileManager.default.isReadableFile(atPath: url.path) else {
+                    throw CocoaError(.fileReadNoPermission)
+                }
+                urls.append(url)
+                // Upgrade legacy bookmarks while the file remains accessible.
+                updatedFiles.append(stale || url.path != file.path || file.isSecurityScoped != true ? capture(url) : file)
             }
-            let url = bookmarked ?? URL(fileURLWithPath: file.path)
-            if url.startAccessingSecurityScopedResource() { accessedURLs.append(url) }
-            guard FileManager.default.isReadableFile(atPath: url.path) else {
-                throw CocoaError(.fileReadNoPermission)
-            }
-            urls.append(url)
-            // Upgrade legacy bookmarks while the file remains accessible.
-            updatedFiles.append(stale || url.path != file.path || file.isSecurityScoped != true ? capture(url) : file)
         }
-        return try body(urls, updatedFiles)
+
+        deinit { accessedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+    }
+
+    static func withResolvedFiles<T>(_ files: [ClipboardFile], body: ([URL], [ClipboardFile]) throws -> T) throws -> T {
+        let resolved = try ResolvedFiles(files)
+        return try withExtendedLifetime(resolved) { try body(resolved.urls, resolved.updatedFiles) }
     }
 
     static func areAvailable(_ files: [ClipboardFile]) -> Bool {

@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @MainActor
-final class ApplicationController: NSObject, NSWindowDelegate {
+final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServicePickerDelegate, NSSharingServiceDelegate {
     let store: ClipboardStore
     let shortcuts = GlobalShortcutManager()
     let pasteController: ClipboardPasteController
@@ -84,6 +84,10 @@ final class ApplicationController: NSObject, NSWindowDelegate {
     private(set) var isRelaunchRequested = false
 
     private var panel: ClipboardPanel?
+    private var savePanel: NSSavePanel?
+    private var sharePicker: NSSharingServicePicker?
+    private var shareFiles: ClipboardFileAccess.ResolvedFiles?
+    private var activeShareFiles: [ObjectIdentifier: ClipboardFileAccess.ResolvedFiles] = [:]
     private var settingsWindow: NSWindow?
     private var statisticsWindow: NSWindow?
     private var setupWindow: NSWindow?
@@ -143,6 +147,7 @@ final class ApplicationController: NSObject, NSWindowDelegate {
     }
 
     func togglePanel() {
+        guard savePanel == nil else { return }
         if panel?.isVisible == true {
             hidePanel()
         } else if settingsWindow?.attachedSheet == nil {
@@ -209,7 +214,9 @@ final class ApplicationController: NSObject, NSWindowDelegate {
                 onOpenSettings: { [weak self] in self?.showSettings() },
                 onStartPasteQueue: { [weak self] items in self?.startPasteQueue(items) },
                 onPasteNext: { [weak self] in self?.pasteNextQueuedItem() },
-                onRelaunch: { [weak self] in self?.requestRelaunch() }
+                onRelaunch: { [weak self] in self?.requestRelaunch() },
+                onShare: { [weak self] items, point in self?.showSharePicker(items, at: point) },
+                onSaveAsFile: { [weak self] id in await self?.saveHistoryEntryAsFile(id) }
             ).modifier(PasketAccentColor(preferences: accentColor))
                 .modifier(PasketAppearance(preferences: appearance)))
             self.panel = panel
@@ -231,6 +238,10 @@ final class ApplicationController: NSObject, NSWindowDelegate {
         guard !isHidingPanel else { return }
         isHidingPanel = true
         defer { isHidingPanel = false }
+        savePanel?.cancel(nil)
+        sharePicker?.close()
+        sharePicker = nil
+        shareFiles = nil
         pasteController.cancel()
         let applicationToRestore = previousApplication
         previousApplication = nil
@@ -240,6 +251,94 @@ final class ApplicationController: NSObject, NSWindowDelegate {
            !applicationToRestore.isTerminated, !applicationToRestore.isActive {
             applicationToRestore.activate()
         }
+    }
+
+    private func saveHistoryEntryAsFile(_ id: UUID) async {
+        guard let panel, panel.isVisible, savePanel == nil else { return }
+        let presentation = store.presentationID
+        do {
+            let export = try await store.prepareFileExport(for: id)
+            guard panel.isVisible, store.presentationID == presentation, panel.attachedSheet == nil,
+                  savePanel == nil, sharePicker == nil else { return }
+
+            let dialog = NSSavePanel()
+            let directoryKey = "clipboardExportDirectory"
+            let defaults = UserDefaults.standard
+            let home = NSHomeDirectoryForUser(NSUserName()) ?? NSHomeDirectory()
+            let directoryPath = defaults.string(forKey: directoryKey)
+                ?? URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent("Documents").path
+            dialog.directoryURL = URL(fileURLWithPath: directoryPath, isDirectory: true)
+            dialog.nameFieldStringValue = export.suggestedName
+            dialog.allowedContentTypes = [export.contentType]
+            dialog.allowsOtherFileTypes = false
+            dialog.canCreateDirectories = true
+            dialog.showsTagField = true
+            savePanel = dialog
+            let response = await dialog.beginSheetModal(for: panel)
+            savePanel = nil
+            guard response != .cancel else { return }
+            guard response == .OK, let url = dialog.url else {
+                if store.presentationID == presentation { store.toasts.showSaveFailure(from: .fileExport) }
+                return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+            let data = export.data
+            let tagNames = dialog.tagNames ?? []
+            let tagsApplied = try await Task.detached(priority: .userInitiated) { () throws -> Bool in
+                try data.write(to: url, options: .atomic)
+                guard !tagNames.isEmpty else { return true }
+                do {
+                    var destination = url
+                    var values = URLResourceValues()
+                    values.tagNames = tagNames
+                    try destination.setResourceValues(values)
+                    return true
+                } catch {
+                    return false
+                }
+            }.value
+            defaults.set(url.deletingLastPathComponent().path, forKey: directoryKey)
+            guard store.presentationID == presentation else { return }
+            store.toasts.showFileSaved(at: url, tagsApplied: tagsApplied)
+        } catch {
+            guard store.presentationID == presentation else { return }
+            store.toasts.showSaveFailure(from: .fileExport)
+        }
+    }
+
+    private func showSharePicker(_ share: ClipboardStore.ShareItems, at point: CGPoint) {
+        guard let panel, panel.isVisible, let view = panel.contentView else { return }
+        sharePicker?.close()
+        let picker = NSSharingServicePicker(items: share.items)
+        picker.delegate = self
+        sharePicker = picker
+        shareFiles = share.files
+        let y = view.isFlipped ? point.y : view.bounds.height - point.y
+        picker.show(relativeTo: CGRect(x: point.x, y: y, width: 1, height: 1), of: view,
+                    preferredEdge: .minY)
+    }
+
+    func sharingServicePicker(_ picker: NSSharingServicePicker,
+                              delegateFor sharingService: NSSharingService) -> (any NSSharingServiceDelegate)? {
+        if picker === sharePicker, let shareFiles {
+            activeShareFiles[ObjectIdentifier(sharingService)] = shareFiles
+        }
+        return self
+    }
+
+    func sharingServicePicker(_ picker: NSSharingServicePicker, didChoose service: NSSharingService?) {
+        guard picker === sharePicker else { return }
+        if let service, let shareFiles { activeShareFiles[ObjectIdentifier(service)] = shareFiles }
+        sharePicker = nil
+        shareFiles = nil
+    }
+
+    func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) {
+        activeShareFiles[ObjectIdentifier(sharingService)] = nil
+    }
+
+    func sharingService(_ sharingService: NSSharingService, didFailToShareItems items: [Any], error: any Error) {
+        activeShareFiles[ObjectIdentifier(sharingService)] = nil
     }
 
     private func pasteCopiedItem() {
@@ -526,7 +625,7 @@ final class ApplicationController: NSObject, NSWindowDelegate {
 
     func windowDidResignKey(_ notification: Notification) {
         if !isHidingPanel, let window = notification.object as? NSWindow, window === panel, window.isVisible,
-           window.attachedSheet == nil {
+           window.attachedSheet == nil, sharePicker == nil, savePanel == nil {
             hidePanel(restorePreviousApplication: false)
         }
     }

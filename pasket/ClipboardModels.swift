@@ -84,18 +84,24 @@ nonisolated struct ClipboardItem: Identifiable, Codable, Sendable {
     var fingerprint: String
     var image: ClipboardImage?
     var files: [ClipboardFile] = []
+    var snapshot: ClipboardSnapshotInfo? = nil
     var imageTextMatch: String? = nil
+    var isPinned = false
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, title, content, source, copiedAt, fingerprint, image, files
+        case id, kind, title, content, source, copiedAt, fingerprint, image, files, snapshot
     }
 
-    var textByteCount: Int { [.text, .link, .email].contains(kind) ? content.utf8.count : 0 }
-    var imageByteCount: Int { image.map { $0.byteCount + $0.thumbnailByteCount } ?? 0 }
+    var textByteCount: Int {
+        (snapshot?.textBytes ?? 0) + ([.text, .link, .email].contains(kind) ? content.utf8.count : 0)
+    }
+    var imageByteCount: Int {
+        (snapshot?.imageBytes ?? 0) + (image.map { $0.byteCount + $0.thumbnailByteCount } ?? 0)
+    }
     var imageFile: ClipboardFile? { kind == .file && files.count == 1 && files[0].isImage ? files[0] : nil }
     var hasImagePreview: Bool { kind == .image || imageFile != nil }
-
     var canEditText: Bool { [.text, .link, .email].contains(kind) }
+    var canSaveAsFile: Bool { canEditText || image != nil }
 
     static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -151,6 +157,7 @@ nonisolated struct ClipboardHistory: Codable, Sendable {
 }
 
 nonisolated enum ClipboardHistoryPeriod: String, CaseIterable, Identifiable, Sendable {
+    case pinned = "Pinned"
     case today = "Today"
     case yesterday = "Yesterday"
     case sevenDays = "7 Days"
@@ -184,7 +191,7 @@ nonisolated struct ClipboardHistorySection: Identifiable, Sendable {
             return items.isEmpty ? [] : [Self(period: .searchResults, items: items)]
         }
         let grouped = Dictionary(grouping: items) { item -> ClipboardHistoryPeriod in
-            .period(for: item.copiedAt, at: date, calendar: calendar)
+            item.isPinned ? .pinned : .period(for: item.copiedAt, at: date, calendar: calendar)
         }
         return ClipboardHistoryPeriod.allCases.compactMap { period in
             grouped[period].map { Self(period: period, items: $0) }
@@ -196,4 +203,6 @@ nonisolated enum ClipboardLimits {
     static let textCharacters = 2_000
     static let imageBytes = 20 * 1_024 * 1_024
     static let imagePixels = 40_000_000
+    static let snapshotTextBytes = 2 * 1_024 * 1_024
+    static let snapshotItems = 100
 }

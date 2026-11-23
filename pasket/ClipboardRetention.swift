@@ -40,6 +40,12 @@ nonisolated struct ClipboardRetentionEntry: Equatable, Sendable {
     var recordBytes: Int
     var imageName: String
     var thumbnailName: String
+    var isPinned = false
+    var snapshotName: String? = nil
+
+    var mediaNames: [String] {
+        (imageName.isEmpty ? [] : [imageName, thumbnailName]) + [snapshotName].compactMap { $0 }
+    }
 }
 
 nonisolated struct ClipboardRetentionPlan: Equatable, Sendable {

@@ -85,6 +85,7 @@ use its close button, Escape, or Command-W to close it. Settings remains a separ
   the search field focused, so you can continue typing immediately.
 - History is grouped by local calendar dates under **Today**, **Yesterday**, **7 Days** (2–7 days
   ago), and **30 Days** (8–30 days ago). Earlier entries appear under **Older**; empty groups are hidden.
+  Pinned entries appear above the date groups, ordered by their latest copy times.
   While searching, a single **Search Results** group preserves relevance order across dates.
 - Click to select one entry, Command-click to toggle individual entries, and Shift-click to select
   a range across date groups. Command-Shift-click adds a range to existing selections. Shift-Up/Down
@@ -102,9 +103,25 @@ use its close button, Escape, or Command-W to close it. Settings remains a separ
   when that batch expires. The collection indicator and total history count stay at the footer's left.
   Multiple selections show a numbered summary; inspect an entry without changing the selection.
   **Delete Selected** and the deletion shortcut affect the selection, with confirmation for multiple
-  entries. A selected row's Delete context menu uses the full selection; an unselected row uses itself.
+  entries. The footer's **Actions** button and a secondary click on a history row open the same menu.
+  A secondary click on a selected row preserves the full selection.
+- For a single entry, **Pin Entry** and **Unpin Entry** change its persistent pin. **Share** opens
+  the system sharing picker for that entry. **Edit** opens a multiline editor for text, links,
+  and email addresses. **Save** updates the original entry and its searchable text while keeping
+  the copy time and source. Edits leave the current clipboard intact.
+- **Save as File…** (Shift-Command-S) exports a single entry through the macOS save panel.
+  Saved images export as full-size PNG or original GIF. Text, links, and email addresses export
+  as UTF-8 text. The panel starts in Documents, remembers the last successful destination, and
+  applies the chosen Finder tags to the exported file.
+  The history entry and clipboard contents stay intact.
+- **Paste** and **Copy to Clipboard** restore the formats collected for an entry. In **Actions**,
+  **Paste as…** expands in place to show the available plain text, HTML, RTF, and URL formats.
+  **Paste as URL** provides the structured link and its title alongside the URL address as plain text
+  for text fields. Entries
+  whose images were copied as TIFF can also use **Paste as PNG**. Image entries with multiple
+  copied items show their image count in the preview details.
 - With multiple entries selected, **Paste Together** combines text, links, and emails using a new
-  line by default, writes images as separate PNG pasteboard items in one operation, or writes
+  line by default, writes saved images as separate pasteboard items in one operation, or writes
   file entries as one group of file references. Multiple-image paste requires destination app
   support; the paste queue remains available for pasting images individually. The adjacent arrow opens
   paste options: choose New Line, Space, Blank Line, or None as the text separator, and toggle
@@ -228,21 +245,25 @@ Pasket never changes your system privacy settings.
   (extended grapheme clusters). Longer text is skipped with a visible message, never truncated.
   List summaries show up to 120 characters. The detail view displays the complete saved text,
   with scrolling for longer entries. Search and copying also use the complete saved text.
-- An entire HTTP/HTTPS URL is classified as a link; an entire email address as an email.
-  Surrounding whitespace is ignored only for classification. Mixed prose remains text.
+- A structured URL is a link with a URL payload and, when supplied, a display name. An entire
+  HTTP/HTTPS URL in plain text also appears under Links and pastes as text. An entire email
+  address appears under Emails. Surrounding whitespace is ignored only for text classification.
+- A clipboard copy can contain up to 100 items. History stores one entry for the copy and
+  preserves the order of its supported items. Each item retains the available plain text, HTML,
+  RTF, URL, and image representations. The combined text representations have a 2 MiB limit.
 - Each entry records its latest copy time and an estimated source app name and bundle ID.
   Source attribution uses the frontmost external app at observation time; clipboard data does not
-  provide a reliable source identity. Identical text, normalized image data, or the same ordered
-  group of file paths updates one record and moves it to the top. Copying from Pasket also moves
+  provide a reliable source identity. Identical text, identical clipboard representations in
+  the same order, or the same ordered group of file paths updates one record and moves it to the top.
+  Copying from Pasket also moves
   the entry to the top while retaining its original source metadata.
 - Entries marked concealed, transient, or automatically generated are skipped. Other unmarked
   clipboard text is collected normally.
-- Images are saved as PNG with a thumbnail, with a **20 MiB** per-image limit (including the incoming
-  representation) and a 40-million-pixel decode limit. Image processing happens outside the main
-  actor; in-memory thumbnails are bounded to 32. History rows fall back to the default image icon
-  when a thumbnail is missing or unreadable. The detail pane independently loads a preview from the
-  saved original, limited to 1,600 pixels on its longest side; only the current preview is retained.
-  Copying restores the saved image data.
+- Incoming image representations have a combined **20 MiB** limit per copy. The first image
+  supplies the preview and thumbnail, with a 40-million-pixel decode limit. Image processing
+  happens outside the main actor. In-memory thumbnails are bounded to 32. History rows use the
+  default image icon when a thumbnail is unavailable. The detail pane retains only the current
+  preview and limits its longest side to 1,600 pixels.
 - A single copied image file, including a screenshot tool's temporary file, remains a file reference.
   Its thumbnail and detail preview are generated in memory from the original while access is available;
   Pasket does not save a copy. Existing image file entries support the same previews. Once the original
@@ -251,7 +272,7 @@ Pasket never changes your system privacy settings.
 - **Delete Unavailable Files** in the bottom-right More menu checks file references across the entire
   history, regardless of the current search or filter. It removes an entry if any referenced file is
   missing or inaccessible, while keeping original files, readable file entries, text, and saved images.
-- **Auto Recycle Unavailable Items** in Settings → History performs the same check when you close
+- **Auto Recycle Unavailable Items** in Settings → History checks unpinned entries when you close
   the history window, at most once every **5 minutes** during an app session. It is off by default, including for existing
   installations. Toggle it and choose **Apply** to save; the first check runs on the next close.
   Copying, startup, and hourly or wake maintenance do not trigger this file scan. Checks cover the
@@ -270,7 +291,7 @@ Pasket never changes your system privacy settings.
   entry. Access is handled automatically, without folder authorization settings or a restore-access
   prompt. A readable file that cannot be previewed shows **Preview unavailable** and can still be
   copied. Deleting history never deletes the original files.
-- By default, keep up to **2,026 entries**, **50 MiB of text bodies**, **500 MiB of images including
+- By default, keep up to **2,026 unpinned entries**, **50 MiB of text bodies**, **500 MiB of images including
   thumbnails**, and **60 days of history**. Settings → History lets you change each limit or choose
   Unlimited independently. All four settings are shown together, with current record count and
   text/image usage beside their inputs. Custom input fields align numbers and units in fixed columns;
@@ -278,7 +299,8 @@ Pasket never changes your system privacy settings.
   Clicking outside an input or pressing Return dismisses input focus. Unsaved edits are labeled,
   and Apply uses a solid accent background whenever valid changes are ready to save.
   Text storage includes text, links, and email bodies. File groups count as one entry; their original
-  file sizes are excluded. Single-entry collection limits still apply.
+  file sizes are excluded. Pinned entries are excluded from automatic cleanup and its limits.
+  Single-entry collection limits still apply.
 - Cleanup first removes expired entries, then the oldest text entries when text storage is over its
   limit, then the oldest images when image storage is over its limit, and finally the oldest remaining
   entries when the record count is over its limit. Age and eviction order use the latest copy time;
@@ -308,7 +330,7 @@ Pasket never changes your system privacy settings.
 History uses a versioned SQLite database (`history.sqlite`) and a separate `Images` directory under
 the app's Application Support/Pasket directory inside its sandbox. The system SQLite library is
 used without third-party dependencies or network services. The list initially reads an ordered
-identity/date index for all matches and 50 summaries, with at most 500 characters of text per row.
+index of entry IDs, copy times, and pins for all matches and 50 summaries, with at most 500 characters of text per row.
 `ClipboardHistoryLayout` reserves the complete document height, including date headers, before
 further summaries load. The view creates only rows near the viewport, with equal-sized placeholders
 for unloaded items. Dragging the native scrollbar to an unloaded position reads the corresponding

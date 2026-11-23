@@ -1,10 +1,11 @@
 import Foundation
 import OSLog
 
-// Only identities and dates are needed to reserve the entire scrollable document.
+// Row grouping is available before summaries are loaded.
 nonisolated struct ClipboardHistoryReference: Identifiable, Equatable, Sendable {
     let id: UUID
     let copiedAt: Date
+    var isPinned = false
 }
 
 nonisolated struct ClipboardHistoryLayout {
@@ -51,7 +52,7 @@ nonisolated struct ClipboardHistoryLayout {
         var previousPeriod: ClipboardHistoryPeriod?
         for (index, reference) in references.enumerated() {
             let period: ClipboardHistoryPeriod = isSearch ? .searchResults
-                : .period(for: reference.copiedAt, at: date, calendar: calendar)
+                : reference.isPinned ? .pinned : .period(for: reference.copiedAt, at: date, calendar: calendar)
             if period != previousPeriod {
                 let height = previousPeriod == nil ? Self.firstHeaderHeight : Self.headerHeight
                 entries.append(Entry(id: .header(period), itemIndex: nil, y: y, height: height))

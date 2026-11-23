@@ -12,6 +12,8 @@ struct ContentView: View {
     var onStartPasteQueue: ([ClipboardItem]) -> Void = { _ in }
     var onPasteNext: () -> Void = {}
     var onRelaunch: () -> Void = {}
+    var onShare: (ClipboardStore.ShareItems, CGPoint) -> Void = { _, _ in }
+    var onSaveAsFile: (UUID) async -> Void = { _ in }
 
     private struct PreviewIdentity: Hashable {
         let id: UUID
@@ -29,6 +31,8 @@ struct ContentView: View {
     @State private var filterControlFrame: CGRect = .zero
     @State private var actionsAnchor: ClipboardActionsAnchor?
     @State private var actionsControlFrame: CGRect = .zero
+    @State private var editingEntry: ClipboardItem?
+    @State private var isPreparingEntryAction = false
     @State private var isConfirmingClear = false
     @State private var showsSearchProgress = false
     @State private var pendingDeletion: Set<UUID> = []
@@ -51,8 +55,30 @@ struct ContentView: View {
         reversePasteOrder ? Array(store.selectedItems.reversed()) : store.selectedItems
     }
     private var isDialogPresented: Bool {
-        isConfirmingClear || isConfirmingDeletion || isShowingQueueSetup || store.systemAccess.request != nil
+        isConfirmingClear || isConfirmingDeletion || isShowingQueueSetup || editingEntry != nil
+            || store.systemAccess.request != nil
     }
+
+    private static let pinShortcut = GlobalShortcut(keyCode: UInt32(kVK_ANSI_Period), modifiers: UInt32(cmdKey), keyLabel: ".")
+    private static let editShortcut = GlobalShortcut(keyCode: UInt32(kVK_ANSI_E), modifiers: UInt32(cmdKey), keyLabel: "E")
+    private static let saveAsFileShortcut = GlobalShortcut(
+        keyCode: UInt32(kVK_ANSI_S), modifiers: UInt32(shiftKey | cmdKey), keyLabel: "S"
+    )
+    private static let selectRecentShortcut = GlobalShortcut(keyCode: UInt32(kVK_Tab), modifiers: UInt32(shiftKey), keyLabel: "⇥")
+
+    private func availableEntryShortcut(_ shortcut: GlobalShortcut) -> GlobalShortcut? {
+        let configured = [shortcuts.shortcut, shortcuts.actionsShortcut, shortcuts.settingsShortcut,
+                          shortcuts.deletionShortcut, shortcuts.pasteNextShortcut]
+        return configured.compactMap { $0 }.contains { $0.hasSameKeys(as: shortcut) } ? nil : shortcut
+    }
+
+    private var canPinEntry: Bool { store.canUseEntryActions && !store.isChangingPin }
+    private var canEditEntry: Bool {
+        store.canUseEntryActions && !isPreparingEntryAction && store.selectedItem?.canEditText == true
+    }
+    private var canShareEntry: Bool { store.canUseEntryActions && !isPreparingEntryAction && store.canCopySelection }
+    private var showsSaveAsFile: Bool { store.selectedIDs.count == 1 && store.selectedItem?.canSaveAsFile == true }
+    private var canSaveAsFile: Bool { showsSaveAsFile && canShareEntry }
 
     private var canClearHistory: Bool {
         !store.isDebugMode && store.totalCount > 0 && !store.isLoading && !store.isStorageBlocked
@@ -64,14 +90,17 @@ struct ContentView: View {
         if store.selectedIDs.count <= 1 { return "Paste" }
         return store.canCombineSelection ? "Paste Together" : "Start Paste Queue"
     }
-    private static let selectRecentShortcut = GlobalShortcut(keyCode: UInt32(kVK_Tab), modifiers: UInt32(shiftKey), keyLabel: "⇥")
-
     private var usesFooterGlass: Bool { appearance == .liquidGlass }
     private var footerGlassInset: CGFloat { usesFooterGlass ? 4 : 0 }
 
     var body: some View {
         historySurface
             .overlay(alignment: .bottomTrailing) { pasteMenuOverlay }
+            .sheet(item: $editingEntry, onDismiss: { searchFocused = true }) { item in
+                ClipboardEntryEditor(item: item) { text in
+                    try await store.editHistoryText(text, for: item)
+                }
+            }
             .sheet(isPresented: $isShowingQueueSetup, onDismiss: finishQueueSetup) {
                 ShortcutRecordingView(shortcuts: shortcuts,
                                       onSave: { startsQueueAfterSetup = true; isShowingQueueSetup = false },
@@ -195,6 +224,21 @@ struct ContentView: View {
                     }
                     return true
                 }
+                if (!isMenuPresented || isActionsMenuPresented),
+                   canPinEntry, availableEntryShortcut(Self.pinShortcut)?.matches(event) == true {
+                    if !event.isARepeat { performAction(.togglePin) }
+                    return true
+                }
+                if (!isMenuPresented || isActionsMenuPresented),
+                   canEditEntry, availableEntryShortcut(Self.editShortcut)?.matches(event) == true {
+                    if !event.isARepeat { performAction(.edit) }
+                    return true
+                }
+                if (!isMenuPresented || isActionsMenuPresented),
+                   canSaveAsFile, availableEntryShortcut(Self.saveAsFileShortcut)?.matches(event) == true {
+                    if !event.isARepeat { performAction(.saveAsFile) }
+                    return true
+                }
                 guard !isMenuPresented, shortcuts.deletionShortcut?.matches(event) == true else { return false }
                 if !event.isARepeat, !store.isLoading, !store.isStorageBlocked {
                     requestDeletion(store.selectedIDs)
@@ -236,13 +280,20 @@ struct ContentView: View {
                     ClipboardActionsMenu(
                         pasteTitle: pasteActionTitle, canPaste: canPasteSelection,
                         canCopyToClipboard: canPasteSelection && store.canCombineSelection,
+                        pasteFormats: store.selectedIDs.count == 1 ? store.selectedItem?.snapshot?.formats ?? [] : [],
                         showsCopyImageText: store.selectedIDs.count == 1 && store.selectedItem?.image?.isGIF == false,
                         canCopyImageText: store.canCopySelectedImageText,
+                        canPinEntry: canPinEntry, isEntryPinned: store.selectedItem?.isPinned == true,
+                        canShareEntry: canShareEntry, canEditEntry: canEditEntry,
+                        showsSaveAsFile: showsSaveAsFile, canSaveAsFile: canSaveAsFile,
+                        pinShortcut: availableEntryShortcut(Self.pinShortcut),
+                        editShortcut: availableEntryShortcut(Self.editShortcut),
+                        saveAsFileShortcut: availableEntryShortcut(Self.saveAsFileShortcut),
                         selectedCount: store.selectedIDs.count,
                         canDeleteSelected: store.selectedID != nil && !store.isDebugMode && !store.isLoading
                             && !store.isStorageBlocked && !store.isCopying && !store.pasteQueue.isPasting,
-                        canClearHistory: canClearHistory, deletionShortcut: shortcuts.deletionShortcut?.displayName,
-                        settingsShortcut: shortcuts.settingsShortcut?.displayName,
+                        canClearHistory: canClearHistory, deletionShortcut: shortcuts.deletionShortcut,
+                        settingsShortcut: shortcuts.settingsShortcut,
                         onSelect: performAction, onDismiss: dismissMenus
                     )
                 }
@@ -280,6 +331,7 @@ struct ContentView: View {
             isInspectingSelection = false
             isConfirmingDeletion = false
             pendingDeletion = []
+            editingEntry = nil
             if isShowingQueueSetup {
                 startsQueueAfterSetup = false
                 pendingQueueItems = []
@@ -533,7 +585,7 @@ struct ContentView: View {
             searchFocused = true
             copySelection()
         })
-        .accessibilityLabel("\(item.title), \(item.kind.title), from \(item.source.name)")
+        .accessibilityLabel("\(item.title), \(item.kind.title), from \(item.source.name)\(item.isPinned ? ", pinned" : "")")
         .accessibilityValue(store.searchesImageText && !store.query.isEmpty ? item.imageTextMatch ?? "" : "")
         .accessibilityAddTraits(store.selectedIDs.contains(item.id) ? .isSelected : [])
         .accessibilityAction(named: Text("Show Actions")) {
@@ -673,6 +725,9 @@ struct ContentView: View {
             }
         }
         if let image = item.image {
+            if let count = item.snapshot?.imageCount, count > 1 {
+                rows.append(("Images", count.formatted()))
+            }
             rows.append(("Dimensions", "\(image.width) × \(image.height)"))
             rows.append(("Size", ByteCountFormatter.string(fromByteCount: Int64(image.byteCount), countStyle: .file)))
         }
@@ -955,13 +1010,16 @@ struct ContentView: View {
         if shouldStart { onStartPasteQueue(items) }
     }
 
-    private func pasteCombinedSelection() {
+    private func pasteCombinedSelection(format: ClipboardPasteFormat? = nil) {
         guard store.selectedIDs.count == 1 || store.canCombineSelection else { return }
         let presentation = store.presentationID
+        let selection = store.selectedIDs
         let separator = textSeparator
         let reversed = reversePasteOrder
         Task {
-            if await store.copySelection(separator: separator, reversed: reversed), store.presentationID == presentation {
+            guard store.presentationID == presentation, store.selectedIDs == selection else { return }
+            if await store.copySelection(separator: separator, reversed: reversed, format: format),
+               store.presentationID == presentation {
                 onPasteCopiedItem()
             }
         }
@@ -1024,11 +1082,23 @@ struct ContentView: View {
     }
 
     private func performAction(_ action: ClipboardActionsMenu.Action) {
+        let anchor = actionsAnchor
         dismissMenus()
         switch action {
         case .paste: copySelection()
+        case .pasteAs(let format): pasteCombinedSelection(format: format)
+        case .togglePasteFormats: break
         case .copyToClipboard: copySelectionToClipboard()
         case .copyImageText: Task { await store.copySelectedImageText() }
+        case .togglePin: Task { await store.toggleSelectedPin() }
+        case .share:
+            if case .pointer(let point) = anchor {
+                prepareEntryAction(.share, at: point)
+            } else {
+                prepareEntryAction(.share, at: CGPoint(x: actionsControlFrame.midX, y: actionsControlFrame.minY))
+            }
+        case .saveAsFile: saveSelectedEntryAsFile()
+        case .edit: prepareEntryAction(.edit)
         case .deleteSelected: requestDeletion(store.selectedIDs)
         case .deleteUnavailableFiles: Task { await store.deleteUnavailableFiles() }
         case .clearHistory:
@@ -1037,6 +1107,45 @@ struct ContentView: View {
         case .settings:
             searchFocused = false
             onOpenSettings()
+        }
+    }
+
+    private func saveSelectedEntryAsFile() {
+        guard canSaveAsFile, let id = store.selectedID else { return }
+        let presentation = store.presentationID
+        isPreparingEntryAction = true
+        searchFocused = false
+        Task {
+            await onSaveAsFile(id)
+            isPreparingEntryAction = false
+            if store.presentationID == presentation, !isMenuPresented, !isDialogPresented {
+                searchFocused = true
+            }
+        }
+    }
+
+    private func prepareEntryAction(_ action: ClipboardActionsMenu.Action, at point: CGPoint = .zero) {
+        guard let id = store.selectedID, action == .share ? canShareEntry : canEditEntry else { return }
+        let presentation = store.presentationID
+        isPreparingEntryAction = true
+        Task {
+            defer { isPreparingEntryAction = false }
+            do {
+                if action == .share {
+                    let items = try await store.loadShareItems(for: id)
+                    guard store.presentationID == presentation else { return }
+                    onShare(items, point)
+                } else {
+                    let item = try await store.loadHistoryEntry(id)
+                    guard store.presentationID == presentation, item.canEditText else { return }
+                    searchFocused = false
+                    editingEntry = item
+                }
+            } catch {
+                guard store.presentationID == presentation else { return }
+                store.toasts.show(error.localizedDescription, source: .notice,
+                                  title: action == .share ? "Could Not Share" : "Could Not Open Editor", style: .error)
+            }
         }
     }
 
@@ -1069,9 +1178,16 @@ private struct ClipboardActionsLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         guard let menu = subviews.first else { return }
-        let size = menu.sizeThatFits(.unspecified)
         let gap = PasketPickerLayout.triggerGap
         let inset = PasketShape.menuInset
+        let availableHeight = bounds.height - 2 * inset
+        let menuHeight: CGFloat
+        if case .footer = anchor, !footerFrame.isEmpty {
+            menuHeight = min(availableHeight, footerFrame.minY - footerInset - gap - inset)
+        } else {
+            menuHeight = availableHeight
+        }
+        let size = menu.sizeThatFits(ProposedViewSize(width: nil, height: max(0, menuHeight)))
         let origin: CGPoint
         switch anchor {
         case .footer:
@@ -1278,6 +1394,8 @@ private struct PasketPickerMenu<Selection: Hashable>: View {
 }
 
 private struct PasketMenuItemStyle: ButtonStyle {
+    static let groupedRowHeight: CGFloat = 32
+
     var isHighlighted: Bool
     var isSelected = false
     var pickerHeight: CGFloat? = nil
@@ -1296,7 +1414,7 @@ private struct PasketMenuItemStyle: ButtonStyle {
             .foregroundStyle(configuration.role == .destructive ? Color.red
                 : isSelected || (isPicker && isInteracting) ? .accentColor : .primary)
             .padding(.horizontal, pickerHeight == nil ? 8 : PasketPickerLayout.contentInset)
-            .frame(minHeight: pickerHeight == nil ? 32 : nil)
+            .frame(minHeight: pickerHeight == nil ? Self.groupedRowHeight : nil)
             .frame(height: pickerHeight)
             .contentShape(PasketShape.control)
             .background {
@@ -1467,15 +1585,100 @@ private struct ClipboardPasteActionsMenu: View {
     }
 }
 
+private struct ClipboardEntryEditor: View {
+    let item: ClipboardItem
+    var onSave: (String) async throws -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var isFocused: Bool
+    @State private var text: String
+    @State private var isSaving = false
+    @State private var error: String?
+
+    init(item: ClipboardItem, onSave: @escaping (String) async throws -> Void) {
+        self.item = item
+        self.onSave = onSave
+        _text = State(initialValue: item.content)
+    }
+
+    private var isTooLong: Bool {
+        text.prefix(ClipboardLimits.textCharacters + 1).count > ClipboardLimits.textCharacters
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Edit Entry").font(.system(size: 16, weight: .medium))
+            TextEditor(text: $text)
+                .font(.system(size: 13))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .background(.primary.opacity(0.045), in: PasketShape.control)
+                .frame(minHeight: 180)
+                .focused($isFocused)
+                .disabled(isSaving)
+                .accessibilityLabel("Entry text")
+                .accessibilityIdentifier("clipboardEntryEditor")
+                .onChange(of: text) { error = nil }
+            if let message = isTooLong
+                ? "Use at most \(ClipboardLimits.textCharacters.formatted()) characters." : error {
+                Text(message).font(.system(size: 12)).foregroundStyle(.red)
+            }
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .disabled(isSaving)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: saveEntry)
+                    .buttonStyle(PasketButtonStyle(isProminent: true))
+                    .disabled(isSaving || isTooLong || text == item.content || !text.contains { !$0.isWhitespace })
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .accessibilityIdentifier("saveClipboardEntry")
+            }
+        }
+        .buttonStyle(PasketButtonStyle())
+        .padding(18)
+        .frame(width: 460)
+        .interactiveDismissDisabled(isSaving)
+        .onAppear { isFocused = true }
+    }
+
+    private func saveEntry() {
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                try await onSave(text)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+}
+
 private struct ClipboardActionsMenu: View {
     enum Action: Hashable {
-        case paste, copyToClipboard, copyImageText, deleteSelected, deleteUnavailableFiles, clearHistory, settings
+        case paste, copyToClipboard, copyImageText, togglePin, share, saveAsFile, edit
+        case deleteSelected, deleteUnavailableFiles, clearHistory, settings
+        case togglePasteFormats, pasteAs(ClipboardPasteFormat)
+
+        var isPasteFormat: Bool {
+            if case .pasteAs = self { return true }
+            return false
+        }
 
         var symbol: String {
             switch self {
-            case .paste: "clipboard"
+            case .paste, .togglePasteFormats: "clipboard"
+            case .pasteAs(.png): "photo"
+            case .pasteAs(.url): "link"
+            case .pasteAs: "doc.text"
             case .copyToClipboard: "document.on.document"
             case .copyImageText: "text.viewfinder"
+            case .togglePin: "pin"
+            case .share: "square.and.arrow.up"
+            case .saveAsFile: "arrow.down.document"
+            case .edit: "pencil"
             case .deleteSelected, .deleteUnavailableFiles, .clearHistory: "trash"
             case .settings: "gearshape"
             }
@@ -1491,8 +1694,14 @@ private struct ClipboardActionsMenu: View {
         var accessibilityIdentifier: String {
             switch self {
             case .paste: "pasteFromActions"
+            case .togglePasteFormats: "toggleClipboardPasteFormats"
+            case .pasteAs(let format): "pasteClipboardAs-\(format.rawValue)"
             case .copyToClipboard: "copyToClipboard"
             case .copyImageText: "copyTextFromImage"
+            case .togglePin: "toggleClipboardEntryPin"
+            case .share: "shareClipboardEntry"
+            case .saveAsFile: "saveClipboardEntryAsFile"
+            case .edit: "editClipboardEntry"
             case .deleteSelected: "deleteSelectedClipboardItem"
             case .deleteUnavailableFiles: "deleteUnavailableClipboardFiles"
             case .clearHistory: "clearClipboardHistory"
@@ -1501,63 +1710,138 @@ private struct ClipboardActionsMenu: View {
         }
     }
 
-    private struct ActionGroup: Identifiable {
-        var title: String
-        var actions: [Action]
-        var id: String { title }
-    }
-
     let pasteTitle: String
     let canPaste: Bool
     let canCopyToClipboard: Bool
+    let pasteFormats: [ClipboardPasteFormat]
     let showsCopyImageText: Bool
     let canCopyImageText: Bool
+    let canPinEntry: Bool
+    let isEntryPinned: Bool
+    let canShareEntry: Bool
+    let canEditEntry: Bool
+    let showsSaveAsFile: Bool
+    let canSaveAsFile: Bool
+    let pinShortcut: GlobalShortcut?
+    let editShortcut: GlobalShortcut?
+    let saveAsFileShortcut: GlobalShortcut?
     let selectedCount: Int
     let canDeleteSelected: Bool
     let canClearHistory: Bool
-    let deletionShortcut: String?
-    let settingsShortcut: String?
+    let deletionShortcut: GlobalShortcut?
+    let settingsShortcut: GlobalShortcut?
     var onSelect: (Action) -> Void
     var onDismiss: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var highlightedAction: Action?
+    @State private var showsPasteFormats = false
     @FocusState private var isFocused: Bool
 
-    private var groups: [ActionGroup] {
-        [ActionGroup(title: "Paste & Copy",
-                     actions: [.paste, .copyToClipboard] + (showsCopyImageText ? [.copyImageText] : [])),
-         ActionGroup(title: "History", actions: [.deleteSelected, .deleteUnavailableFiles, .clearHistory]),
-         ActionGroup(title: "Settings", actions: [.settings])]
+    private static let rowSpacing: CGFloat = 2
+    private static let dividerHeight: CGFloat = 1
+    private static let dividerPadding: CGFloat = 4
+
+    private var groups: [[Action]] {
+        let formatActions: [Action] = pasteFormats.isEmpty ? [] : [.togglePasteFormats]
+            + (showsPasteFormats ? pasteFormats.map(Action.pasteAs) : [])
+        return [[.paste] + formatActions + [.copyToClipboard] + (showsCopyImageText ? [.copyImageText] : []),
+                [.togglePin, .share] + (showsSaveAsFile ? [.saveAsFile] : []) + (canEditEntry ? [.edit] : []),
+                [.deleteSelected, .deleteUnavailableFiles, .clearHistory],
+                [.settings]]
     }
 
-    private var enabledActions: [Action] { groups.flatMap(\.actions).filter(isEnabled) }
+    private var enabledActions: [Action] { groups.flatMap { $0 }.filter(isEnabled) }
     private var defaultAction: Action { enabledActions.first { !$0.isDestructive } ?? .settings }
+    private var rowsHeight: CGFloat {
+        let rows = groups.reduce(0) { $0 + $1.count }
+        let dividers = groups.count - 1
+        return CGFloat(rows) * PasketMenuItemStyle.groupedRowHeight
+            + CGFloat(dividers) * (Self.dividerHeight + 2 * Self.dividerPadding)
+            + CGFloat(rows + dividers - 1) * Self.rowSpacing
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(groups) { group in
-                if group.id != groups.first?.id {
-                    Divider().padding(.horizontal, 8).padding(.vertical, 4)
+        ScrollViewReader { scroll in
+            ScrollView { actionRows }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: rowsHeight)
+            .padding(PasketShape.menuInset)
+            .frame(width: 280)
+            .modifier(ClipboardMenuSurface())
+            .animation(reduceMotion ? nil : ClipboardMenuMotion.animation, value: showsPasteFormats)
+            .focusable()
+            .focusEffectDisabled()
+            .focused($isFocused)
+            .onAppear {
+                highlightedAction = defaultAction
+                isFocused = true
+            }
+            .onKeyPress(.downArrow) { moveHighlight(by: 1, scrollingWith: scroll); return .handled }
+            .onKeyPress(.upArrow) { moveHighlight(by: -1, scrollingWith: scroll); return .handled }
+            .onKeyPress(.return) {
+                let action = highlightedAction ?? defaultAction
+                if isEnabled(action) { selectAction(action) }
+                return .handled
+            }
+            .onKeyPress(.rightArrow) {
+                guard highlightedAction == .togglePasteFormats, canPaste else { return .ignored }
+                showsPasteFormats = true
+                return .handled
+            }
+            .onKeyPress(.leftArrow) {
+                guard showsPasteFormats,
+                      highlightedAction == .togglePasteFormats || highlightedAction?.isPasteFormat == true else {
+                    return .ignored
                 }
-                Text(group.title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .accessibilityAddTraits(.isHeader)
-                ForEach(group.actions, id: \.self) { action in
+                showsPasteFormats = false
+                highlightedAction = .togglePasteFormats
+                scroll.scrollTo(Action.togglePasteFormats)
+                return .handled
+            }
+            .onExitCommand(perform: onDismiss)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Actions")
+            .onChange(of: enabledActions) {
+                if let highlightedAction, !enabledActions.contains(highlightedAction) {
+                    self.highlightedAction = defaultAction
+                }
+            }
+        }
+    }
+
+    private var actionRows: some View {
+        VStack(alignment: .leading, spacing: Self.rowSpacing) {
+            ForEach(Array(groups.enumerated()), id: \.offset) { index, actions in
+                if index > 0 {
+                    Divider()
+                        .frame(height: Self.dividerHeight)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, Self.dividerPadding)
+                }
+                ForEach(actions, id: \.self) { action in
                     Button(role: action.isDestructive ? .destructive : nil) {
-                        onSelect(action)
+                        selectAction(action)
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: action.symbol).frame(width: 16)
+                            Image(systemName: action == .togglePin && isEntryPinned ? "pin.slash" : action.symbol)
+                                .frame(width: 16)
                             Text(title(for: action)).lineLimit(1)
                             Spacer(minLength: 0)
-                            if let shortcut = shortcut(for: action) {
-                                Text(shortcut).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                            if action == .togglePasteFormats {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .rotationEffect(.degrees(showsPasteFormats ? 90 : 0))
+                                    .accessibilityHidden(true)
                             }
+                            shortcutKeycaps(for: action)
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
                         }
                     }
                     .buttonStyle(PasketMenuItemStyle(isHighlighted: highlightedAction == action))
+                    .padding(.leading, action.isPasteFormat ? 24 : 0)
                     .focusable(false)
                     .disabled(!isEnabled(action))
                     .onHover { hovering in
@@ -1565,41 +1849,33 @@ private struct ClipboardActionsMenu: View {
                         else if highlightedAction == action { highlightedAction = nil }
                     }
                     .accessibilityIdentifier(action.accessibilityIdentifier)
+                    .accessibilityLabel(action.isPasteFormat ? "Paste as \(title(for: action))" : title(for: action))
+                    .accessibilityValue(action == .togglePasteFormats ? (showsPasteFormats ? "Expanded" : "Collapsed") : "")
+                    .id(action)
+                    .transition(action.isPasteFormat && !reduceMotion ? .opacity.combined(with: .offset(y: -4)) : .identity)
                 }
             }
         }
-        .padding(PasketShape.menuInset)
-        .frame(width: 280)
-        .modifier(ClipboardMenuSurface())
-        .focusable()
-        .focusEffectDisabled()
-        .focused($isFocused)
-        .onAppear {
-            highlightedAction = defaultAction
-            isFocused = true
-        }
-        .onKeyPress(.downArrow) { moveHighlight(by: 1); return .handled }
-        .onKeyPress(.upArrow) { moveHighlight(by: -1); return .handled }
-        .onKeyPress(.return) {
-            let action = highlightedAction ?? defaultAction
-            if isEnabled(action) { onSelect(action) }
-            return .handled
-        }
-        .onExitCommand(perform: onDismiss)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Actions")
-        .onChange(of: enabledActions) {
-            if let highlightedAction, !enabledActions.contains(highlightedAction) {
-                self.highlightedAction = defaultAction
-            }
+    }
+
+    private func selectAction(_ action: Action) {
+        if action == .togglePasteFormats {
+            highlightedAction = action
+            showsPasteFormats.toggle()
+        } else {
+            onSelect(action)
         }
     }
 
     private func isEnabled(_ action: Action) -> Bool {
         switch action {
-        case .paste: canPaste
+        case .paste, .togglePasteFormats, .pasteAs: canPaste
         case .copyToClipboard: canCopyToClipboard
         case .copyImageText: canCopyImageText
+        case .togglePin: canPinEntry
+        case .share: canShareEntry
+        case .saveAsFile: canSaveAsFile
+        case .edit: canEditEntry
         case .deleteSelected: canDeleteSelected
         case .deleteUnavailableFiles, .clearHistory: canClearHistory
         case .settings: true
@@ -1609,8 +1885,14 @@ private struct ClipboardActionsMenu: View {
     private func title(for action: Action) -> String {
         switch action {
         case .paste: pasteTitle
+        case .togglePasteFormats: "Paste as…"
+        case .pasteAs(let format): format.title
         case .copyToClipboard: "Copy to Clipboard"
         case .copyImageText: "Copy Text from Image"
+        case .togglePin: isEntryPinned ? "Unpin Entry" : "Pin Entry"
+        case .share: "Share…"
+        case .saveAsFile: "Save as File…"
+        case .edit: "Edit"
         case .deleteSelected: selectedCount > 1 ? "Delete \(selectedCount) Selected Items…" : "Delete Selected"
         case .deleteUnavailableFiles: "Delete Unavailable Files"
         case .clearHistory: "Delete All Entries…"
@@ -1618,22 +1900,34 @@ private struct ClipboardActionsMenu: View {
         }
     }
 
-    private func shortcut(for action: Action) -> String? {
+    @ViewBuilder
+    private func shortcutKeycaps(for action: Action) -> some View {
         switch action {
-        case .paste: "↵"
-        case .deleteSelected: deletionShortcut
-        case .settings: settingsShortcut
-        default: nil
+        case .paste:
+            ShortcutKeycap(key: "↵", isCompact: true)
+        case .togglePin:
+            if let pinShortcut { ShortcutKeycaps(shortcut: pinShortcut, isCompact: true) }
+        case .edit:
+            if let editShortcut { ShortcutKeycaps(shortcut: editShortcut, isCompact: true) }
+        case .saveAsFile:
+            if let saveAsFileShortcut { ShortcutKeycaps(shortcut: saveAsFileShortcut, isCompact: true) }
+        case .deleteSelected:
+            if let deletionShortcut { ShortcutKeycaps(shortcut: deletionShortcut, isCompact: true) }
+        case .settings:
+            if let settingsShortcut { ShortcutKeycaps(shortcut: settingsShortcut, isCompact: true) }
+        default:
+            EmptyView()
         }
     }
 
-    private func moveHighlight(by offset: Int) {
+    private func moveHighlight(by offset: Int, scrollingWith scroll: ScrollViewProxy) {
         let actions = enabledActions
-        guard let highlightedAction, let current = actions.firstIndex(of: highlightedAction) else {
-            self.highlightedAction = offset > 0 ? actions.first : actions.last
-            return
+        if let highlightedAction, let current = actions.firstIndex(of: highlightedAction) {
+            self.highlightedAction = actions[(current + offset + actions.count) % actions.count]
+        } else {
+            highlightedAction = offset > 0 ? actions.first : actions.last
         }
-        self.highlightedAction = actions[(current + offset + actions.count) % actions.count]
+        if let highlightedAction { scroll.scrollTo(highlightedAction) }
     }
 }
 
@@ -1696,6 +1990,12 @@ private struct HistoryRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+            if item.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)

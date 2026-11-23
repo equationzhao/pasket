@@ -6,8 +6,7 @@ extension NSPasteboard.PasteboardType {
 }
 
 enum ClipboardCapture {
-    case text(String, ClipboardSource, Date)
-    case image(Data, ClipboardSource, Date)
+    case snapshot(ClipboardPasteboardSnapshot, ClipboardSource, Date)
     case files([ClipboardFile], ClipboardSource, Date)
 }
 
@@ -84,36 +83,44 @@ final class ClipboardMonitor {
                 return
             }
             capture = .files(urls.map(ClipboardFileAccess.capture), source, date)
-        } else if let data = imageData() {
-            guard data.count <= ClipboardLimits.imageBytes else {
-                onNotice?("Image not saved: the limit is 20 MB.")
-                return
-            }
-            capture = .image(data, source, date)
-        } else if let text = pasteboard.string(forType: .string), !text.isEmpty {
-            // Count extended grapheme clusters without walking the rest of an oversized string.
-            guard text.prefix(ClipboardLimits.textCharacters + 1).count <= ClipboardLimits.textCharacters else {
-                onNotice?("Text not saved: the limit is 2,000 characters.")
-                return
-            }
-            guard text.contains(where: { !$0.isWhitespace }) else { return }
-            capture = .text(text, source, date)
         } else {
-            return
+            do {
+                guard let snapshot = try readSnapshot() else { return }
+                capture = .snapshot(snapshot, source, date)
+            } catch {
+                if pasteboard.changeCount == observedCount { onNotice?(error.localizedDescription) }
+                return
+            }
         }
         // A writer may change the pasteboard while its representations are being read.
         guard pasteboard.changeCount == observedCount else { return }
         onCapture?(capture)
     }
 
-    private func imageData() -> Data? {
-        if pasteboard.types?.contains(.gifImage) == true,
-           let data = pasteboard.data(forType: .gifImage), !data.isEmpty {
-            return data
+    private func readSnapshot() throws -> ClipboardPasteboardSnapshot? {
+        guard let pasteboardItems = pasteboard.pasteboardItems, !pasteboardItems.isEmpty else { return nil }
+        guard pasteboardItems.count <= ClipboardLimits.snapshotItems else { throw ClipboardStorageError.tooManyItems }
+        var items: [[ClipboardPasteboardSnapshot.Representation]] = []
+        var imageBytes = 0
+        var textBytes = 0
+        for item in pasteboardItems {
+            var representations: [ClipboardPasteboardSnapshot.Representation] = []
+            for type in item.types where ClipboardPasteboardSnapshot.Representation.supports(type) {
+                guard let data = item.data(forType: type) else { continue }
+                if data.isEmpty, type != .string { continue }
+                let representation = ClipboardPasteboardSnapshot.Representation(type, data: data)
+                if representation.isImage {
+                    imageBytes += data.count
+                    guard imageBytes <= ClipboardLimits.imageBytes else { throw ClipboardStorageError.largeImage }
+                } else {
+                    textBytes += data.count
+                    guard textBytes <= ClipboardLimits.snapshotTextBytes else { throw ClipboardStorageError.largeTextData }
+                }
+                representations.append(representation)
+            }
+            if !representations.isEmpty { items.append(representations) }
         }
-        let types: [NSPasteboard.PasteboardType] = [.png, .tiff, .init(UTType.jpeg.identifier)]
-        guard let type = pasteboard.availableType(from: types) else { return nil }
-        return pasteboard.data(forType: type)
+        return items.isEmpty ? nil : ClipboardPasteboardSnapshot(items: items)
     }
 
     private func updateSource(_ application: NSRunningApplication?) {
