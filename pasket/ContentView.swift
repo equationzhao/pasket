@@ -23,6 +23,7 @@ struct ContentView: View {
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.pasketAppearance) private var appearance
     @FocusState private var searchFocused: Bool
     @State private var isFilterMenuPresented = false
     @State private var filterControlFrame: CGRect = .zero
@@ -62,6 +63,7 @@ struct ContentView: View {
         if store.selectedIDs.count <= 1 { return "Paste" }
         return store.canCombineSelection ? "Paste Together" : "Start Paste Queue"
     }
+    private var footerGlassInset: CGFloat { appearance == .liquidGlass ? 4 : 0 }
 
     var body: some View {
         historySurface
@@ -102,7 +104,8 @@ struct ContentView: View {
                                               onQueue: { dismissMenus(); startPasteQueue() },
                                               onDismiss: dismissMenus)
                         .transition(ClipboardMenuMotion.transition)
-                        .padding(.bottom, geometry.size.height - pasteControlFrame.minY + PasketPickerLayout.triggerGap)
+                        .padding(.bottom, geometry.size.height - pasteControlFrame.minY + footerGlassInset
+                                 + PasketPickerLayout.triggerGap)
                         .padding(.trailing, geometry.size.width - pasteControlFrame.maxX)
                 }
             }
@@ -241,7 +244,8 @@ struct ContentView: View {
                         onSelect: performAction, onDismiss: dismissMenus
                     )
                     .transition(ClipboardMenuMotion.transition)
-                    .padding(.bottom, geometry.size.height - actionsControlFrame.minY + PasketPickerLayout.triggerGap)
+                    .padding(.bottom, geometry.size.height - actionsControlFrame.minY + footerGlassInset
+                             + PasketPickerLayout.triggerGap)
                     .padding(.trailing, geometry.size.width - actionsControlFrame.maxX)
                 }
             }
@@ -706,6 +710,7 @@ struct ContentView: View {
                 .accessibilityHidden(true)
         }
         .buttonStyle(PasketButtonStyle())
+        .controlSize(appearance == .liquidGlass ? .small : .regular)
         .focusable(false)
         .fixedSize()
         .disabled(store.isDebugMode || store.isLoading || store.isStorageBlocked)
@@ -723,7 +728,8 @@ struct ContentView: View {
                     Button(action: selectRecentCopies) {
                         HStack(spacing: 8) {
                             Text("Select Recent")
-                            ShortcutKeycap(key: "⇧⇥").foregroundStyle(.secondary).accessibilityHidden(true)
+                            ShortcutKeycap(key: "⇧⇥", isCompact: appearance == .liquidGlass)
+                                .foregroundStyle(.secondary).accessibilityHidden(true)
                         }
                     }
                     .buttonStyle(PasketButtonStyle())
@@ -752,7 +758,7 @@ struct ContentView: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
-            footerStatus
+            applyFooterGlass(to: footerStatus)
             Spacer()
             ViewThatFits(in: .horizontal) {
                 Text("↑ ↓ Navigate · Tab Select / Deselect").fixedSize()
@@ -762,65 +768,7 @@ struct ContentView: View {
             .foregroundStyle(.secondary)
             .help("Use arrow keys to move focus. Press Tab to select or deselect the focused item.")
             .accessibilityLabel("Use arrow keys to navigate and Tab to select or deselect")
-            selectRecentControl
-            selectionCount
-            Button(action: copySelection) {
-                HStack(spacing: 8) {
-                    Text(pasteActionTitle)
-                    ShortcutKeycap(key: "↵").foregroundStyle(.secondary).accessibilityHidden(true)
-                }
-                .font(.system(size: 12, weight: .medium))
-            }
-            .buttonStyle(PasketButtonStyle(isProminent: true))
-            .controlSize(.small)
-            .focusable(false)
-            .fixedSize()
-            .disabled(!canPasteSelection)
-            .help("Paste selected content into your previous app")
-            .accessibilityIdentifier("copyClipboardItem")
-            if store.selectedIDs.count > 1 {
-                Button {
-                    let wasPresented = isPasteMenuPresented
-                    dismissMenus()
-                    isPasteMenuPresented = !wasPresented
-                    searchFocused = !isPasteMenuPresented
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("Options")
-                        Text("⌥").foregroundStyle(.secondary)
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                }
-                .buttonStyle(PasketButtonStyle(isProminent: true, isActive: isPasteMenuPresented))
-                .focusable(false)
-                .fixedSize()
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("clipboardPanel")) } action: { pasteControlFrame = $0 }
-                .help("Hold Option (⌥) to show paste options, then press a number to choose")
-                .accessibilityLabel("Paste actions and options")
-                .accessibilityIdentifier("clipboardPasteActions")
-            }
-            Button(action: toggleActionsMenu) {
-                HStack(spacing: 8) {
-                    Text("Actions")
-                    if let shortcut = shortcuts.actionsShortcut {
-                        ShortcutKeycaps(shortcut: shortcut).foregroundStyle(.secondary).accessibilityHidden(true)
-                    }
-                }
-                .font(.system(size: 12))
-                .frame(minHeight: 18)
-            }
-            .buttonStyle(PasketButtonStyle(isActive: isActionsMenuPresented))
-            .controlSize(.small)
-            .focusable(false)
-            .fixedSize()
-            .onGeometryChange(for: CGRect.self) { geometry in
-                geometry.frame(in: .named("clipboardPanel"))
-            } action: { frame in
-                actionsControlFrame = frame
-            }
-            .help(shortcuts.actionsShortcut.map { "Show clipboard actions (\($0.displayName))" } ?? "Show clipboard actions")
-            .accessibilityLabel("Actions")
-            .accessibilityIdentifier("clipboardMoreActions")
+            applyFooterGlass(to: footerActions)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -842,19 +790,100 @@ struct ContentView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 9)
-                .frame(minHeight: 28)
+                .frame(minHeight: appearance == .liquidGlass ? 26 : 28)
             } else {
-                HStack(spacing: 6) {
+                HStack(spacing: appearance == .liquidGlass ? 0 : 6) {
                     collectionControl
                     Text("\(store.isDebugMode ? store.displayedItems.count : store.totalCount) items")
                         .font(.system(size: 12))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .help("Change history limits in Settings → History. Text entries are limited to 2,000 characters.")
+                        .padding(.trailing, appearance == .liquidGlass ? 8 : 0)
                 }
                 .fixedSize()
             }
         }
+    }
+
+    private func applyFooterGlass(to group: some View) -> some View {
+        group
+            .padding(footerGlassInset)
+            .glassEffect(appearance == .liquidGlass ? .regular : .identity, in: Capsule())
+    }
+
+    private var footerActions: some View {
+        let usesGlass = appearance == .liquidGlass
+        return HStack(spacing: 6) {
+            selectRecentControl
+            selectionCount
+            Button(action: copySelection) {
+                HStack(spacing: 8) {
+                    Text(pasteActionTitle)
+                    ShortcutKeycap(key: "↵", isCompact: usesGlass)
+                        .foregroundStyle(.secondary).accessibilityHidden(true)
+                }
+                .font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(PasketButtonStyle(isProminent: true))
+            .controlSize(.small)
+            .focusable(false)
+            .fixedSize()
+            .disabled(!canPasteSelection)
+            .help("Paste selected content into your previous app")
+            .accessibilityIdentifier("copyClipboardItem")
+            if store.selectedIDs.count > 1 {
+                Button {
+                    let wasPresented = isPasteMenuPresented
+                    dismissMenus()
+                    isPasteMenuPresented = !wasPresented
+                    searchFocused = !isPasteMenuPresented
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("Options")
+                        if usesGlass {
+                            ShortcutKeycap(key: "⌥", isCompact: true)
+                                .foregroundStyle(.secondary).accessibilityHidden(true)
+                        } else {
+                            Text("⌥").foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(PasketButtonStyle(isProminent: !usesGlass, isActive: isPasteMenuPresented))
+                .controlSize(usesGlass ? .small : .regular)
+                .focusable(false)
+                .fixedSize()
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("clipboardPanel")) } action: { pasteControlFrame = $0 }
+                .help("Hold Option (⌥) to show paste options, then press a number to choose")
+                .accessibilityLabel("Paste actions and options")
+                .accessibilityIdentifier("clipboardPasteActions")
+            }
+            Button(action: toggleActionsMenu) {
+                HStack(spacing: 8) {
+                    Text("Actions")
+                    if let shortcut = shortcuts.actionsShortcut {
+                        ShortcutKeycaps(shortcut: shortcut, isCompact: usesGlass)
+                            .foregroundStyle(.secondary).accessibilityHidden(true)
+                    }
+                }
+                .font(.system(size: 12))
+                .frame(minHeight: 18)
+            }
+            .buttonStyle(PasketButtonStyle(isActive: isActionsMenuPresented))
+            .controlSize(.small)
+            .focusable(false)
+            .fixedSize()
+            .onGeometryChange(for: CGRect.self) { geometry in
+                geometry.frame(in: .named("clipboardPanel"))
+            } action: { frame in
+                actionsControlFrame = frame
+            }
+            .help(shortcuts.actionsShortcut.map { "Show clipboard actions (\($0.displayName))" } ?? "Show clipboard actions")
+            .accessibilityLabel("Actions")
+            .accessibilityIdentifier("clipboardMoreActions")
+        }
+        .fixedSize()
     }
 
     private var selectionCount: some View {
@@ -865,6 +894,7 @@ struct ContentView: View {
                     .font(.system(size: 12))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                    .fixedSize()
                     .contentTransition(reduceMotion ? .identity : .numericText())
                     .transition(.opacity)
             }

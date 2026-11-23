@@ -1328,6 +1328,7 @@ private struct SettingsCard: ViewModifier {
 
 struct ShortcutKeycaps: View {
     let shortcut: GlobalShortcut
+    var isCompact = false
 
     private var keys: [String] {
         let modifiers = String(shortcut.displayName.dropLast(shortcut.keyLabel.count))
@@ -1335,9 +1336,9 @@ struct ShortcutKeycaps: View {
     }
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: isCompact ? 3 : 4) {
             ForEach(Array(keys.enumerated()), id: \.offset) { _, key in
-                ShortcutKeycap(key: key)
+                ShortcutKeycap(key: key, isCompact: isCompact)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -1347,13 +1348,14 @@ struct ShortcutKeycaps: View {
 
 struct ShortcutKeycap: View {
     let key: String
+    var isCompact = false
 
     var body: some View {
         Text(key)
-            .font(.system(size: 12, weight: .medium, design: .monospaced))
-            .frame(minWidth: 12)
-            .padding(.horizontal, 5)
-            .frame(height: 22)
+            .font(.system(size: isCompact ? 11 : 12, weight: .medium, design: .monospaced))
+            .frame(minWidth: isCompact ? 10 : 12)
+            .padding(.horizontal, isCompact ? 3 : 5)
+            .frame(height: isCompact ? 16 : 22)
             .background(.primary.opacity(0.045), in: PasketShape.compact)
             .overlay {
                 PasketShape.compact.strokeBorder(.primary.opacity(0.08))

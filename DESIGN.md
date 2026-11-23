@@ -177,7 +177,6 @@ visual weight beside the two-line labels; row insets and explanation spacing sta
 Use `PasketButtonStyle(isProminent: true)` for the History Apply button, matching other
 primary actions such as Paste. It uses the standard small sizing: minimum height 26,
 horizontal padding 9, and a 12-point regular label, matching Restore Defaults in height.
-Primary actions share a subtle accent fill and outline instead of a separate solid-fill style.
 
 Custom menu items have a minimum height of 32 and 8-point horizontal content padding.
 
@@ -237,6 +236,8 @@ Use `ShortcutKeycap` for both shortcut groups and inline navigation hints. Each 
 12-point medium monospaced text, a minimum content width of 12, horizontal padding of 5,
 height 22, the compact shape, a primary fill at 0.045 opacity, and a primary border at 0.08.
 `ShortcutKeycaps` groups these with a 4-point gap and a combined accessible shortcut name.
+The Liquid Glass footer uses compact keycaps with 11-point labels, a 10-point minimum
+label width, 3-point horizontal padding, a 16-point height, and a 3-point group gap.
 
 Keep specialized emphasis intentional. A primary action may differ in fill or weight,
 but equivalent controls should not acquire unrelated sizing or alignment per screen.
@@ -260,9 +261,15 @@ Liquid Glass look, Reduce Transparency, and Increase Contrast preferences; do no
 Clear and Tinted to hard-coded opacity values or read private system preference keys.
 Do not add the Classic white wash, decorative border, or custom menu shadow over native
 glass. These would obscure its adaptive material and duplicate its edge treatment.
-History rows, cards, and buttons retain their subtle content and interaction fills instead
-of acquiring individual glass layers. Floating menus remain outside `PasketSurface` so
-their material and option labels are not part of the main panel's glass content.
+History rows, cards, and ordinary content buttons retain their subtle content and interaction fills.
+Floating menus draw above `PasketSurface` with their own material and option labels.
+
+In Liquid Glass, the history footer uses two native regular glass capsules with a 4-point
+inset. The left capsule groups the collection indicator and history count. The right capsule
+groups Select Recent, Paste, Options, and Actions, with compact secondary keycaps. Paste uses
+the prominent accent treatment. Options and Actions use the active treatment when their menus
+are open. Anchor menus above the action group with the standard trigger gap. Classic presents
+the controls directly in the footer with standard keycaps.
 
 Manual image text extraction replaces the left footer status after 300 milliseconds with
 a small spinner and a 12-point secondary label. It uses the collection control's height
