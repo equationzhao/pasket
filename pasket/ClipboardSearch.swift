@@ -36,7 +36,9 @@ nonisolated struct ClipboardSearch {
             // The whole-query check already ruled out the identical single token.
             if token.text != query && fields.contains(where: { $0.localizedStandardContains(token.text) }) { continue }
             guard level != .literal else { return 0 }
-            let prepared = preparedFields ?? fields.map { SearchField($0, foldedInitials: &foldedInitials) }
+            let prepared = preparedFields ?? fields.map {
+                SearchField($0, level: level, foldedInitials: &foldedInitials)
+            }
             preparedFields = prepared
             if prepared.contains(where: { token.minimumGap(in: $0.initials, initials: true) != nil }) {
                 usesInitials = true
@@ -90,8 +92,10 @@ nonisolated struct ClipboardSearch {
         let text: [(character: Character, offset: Int)]
         let initials: [(character: Character, offset: Int)]
 
-        init(_ text: String, foldedInitials: inout [Character: String]) {
-            self.text = Array(ClipboardSearch.fold(text)).enumerated().map { ($0.element, $0.offset) }
+        init(_ text: String, level: Level, foldedInitials: inout [Character: String]) {
+            self.text = level == .fuzzy
+                ? Array(ClipboardSearch.fold(text)).enumerated().map { ($0.element, $0.offset) }
+                : []
             let characters = Array(text)
             var initials: [(character: Character, offset: Int)] = []
             var afterSeparator = true

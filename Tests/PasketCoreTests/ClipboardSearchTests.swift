@@ -133,6 +133,16 @@ struct ClipboardSearchTests {
         }
     }
 
+    @Test func mixedTokensKeepTheirRanksAcrossSearchLevels() {
+        let fields = ["XMLParser", "axbyc", "Éditeur"]
+        for query in ["xp abc editeur", "abc editeur xp", "abc xp abc editeur"] {
+            #expect(ClipboardSearch(query, level: .initials).rank(fields: fields) == 0)
+            #expect(ClipboardSearch(query, level: .fuzzy).rank(fields: fields) == 0.25)
+        }
+        #expect(ClipboardSearch("xp editeur", level: .initials).rank(fields: fields) == 1)
+        #expect(ClipboardSearch("xp editeur", level: .fuzzy).rank(fields: fields) == 1)
+    }
+
     @Test func rejectsSparseInitialsAndLargeIndividualGaps() {
         #expect(ClipboardSearch("lp").rank(fields: ["L" + String(repeating: "x", count: 100) + " Phrase"]) == 0)
         #expect(ClipboardSearch("abcde").rank(fields: ["abxxxxcde"]) == 0)
