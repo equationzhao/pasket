@@ -455,6 +455,12 @@ struct ContentView: View {
         .padding(.leading, 18)
         .padding(.trailing, 14)
         .padding(.vertical, 12)
+        .overlay(alignment: .top) {
+            PasketWindowDragRegion()
+                .frame(maxWidth: .infinity)
+                .frame(height: 12)
+                .accessibilityHidden(true)
+        }
     }
 
     private var contentArea: some View {

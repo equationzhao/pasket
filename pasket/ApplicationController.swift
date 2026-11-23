@@ -224,8 +224,15 @@ final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServiceP
         store.prepareForPresentation()
         if let panel {
             let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
-            if let visibleFrame = screen?.visibleFrame {
-                panel.setFrameOrigin(NSPoint(x: visibleFrame.midX - panel.frame.width / 2, y: visibleFrame.midY - panel.frame.height / 2))
+            if let screen {
+                let frame = panel.frame
+                let available = screen.visibleFrame
+                if newPanel || !screen.frame.contains(NSPoint(x: frame.midX, y: frame.midY)) {
+                    panel.setFrameOrigin(NSPoint(x: available.midX - frame.width / 2, y: available.midY - frame.height / 2))
+                } else {
+                    panel.setFrameOrigin(NSPoint(x: max(available.minX, min(frame.minX, available.maxX - frame.width)),
+                                                 y: max(available.minY, min(frame.minY, available.maxY - frame.height))))
+                }
             }
             // Let the nonactivating panel borrow keyboard focus without deactivating the editor.
             panel.makeKeyAndOrderFront(nil)

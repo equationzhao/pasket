@@ -327,6 +327,10 @@ the preview is removed or its window is hidden or fully covered.
 The preview's Source row pairs the app name with its 16-point macOS icon, resolved by
 bundle identifier. Use a secondary app glyph when the original app is unavailable.
 
+The history panel uses the empty 12-point top inset as a window drag region. The
+search field and type filter remain below it. Reopening on the same display keeps the
+panel's position within the usable screen area during the current session.
+
 Custom picker, paste, and more-action menus share `PasketMenuItemStyle`. Grouped menus
 use a primary hover fill at 0.04 opacity and a pressed fill at 0.08; picker
 options use the accent interaction treatment described above. Selected options also have an
