@@ -27,7 +27,7 @@ struct ContentView: View {
     @FocusState private var searchFocused: Bool
     @State private var isFilterMenuPresented = false
     @State private var filterControlFrame: CGRect = .zero
-    @State private var isActionsMenuPresented = false
+    @State private var actionsAnchor: ClipboardActionsAnchor?
     @State private var actionsControlFrame: CGRect = .zero
     @State private var isConfirmingClear = false
     @State private var showsSearchProgress = false
@@ -45,6 +45,7 @@ struct ContentView: View {
     @State private var pendingQueuePresentationID: UUID?
     @State private var startsQueueAfterSetup = false
 
+    private var isActionsMenuPresented: Bool { actionsAnchor != nil }
     private var isMenuPresented: Bool { isFilterMenuPresented || isActionsMenuPresented || isPasteMenuPresented }
     private var orderedSelectedItems: [ClipboardItem] {
         reversePasteOrder ? Array(store.selectedItems.reversed()) : store.selectedItems
@@ -228,10 +229,11 @@ struct ContentView: View {
     }
 
     private var actionsMenuOverlay: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .bottomTrailing) {
-                if isActionsMenuPresented {
-                    menuBackdrop
+        ZStack {
+            if let actionsAnchor {
+                menuBackdrop
+                ClipboardActionsLayout(anchor: actionsAnchor, footerFrame: actionsControlFrame,
+                                       footerInset: footerGlassInset) {
                     ClipboardActionsMenu(
                         pasteTitle: pasteActionTitle, canPaste: canPasteSelection,
                         showsCopyImageText: store.selectedIDs.count == 1 && store.selectedItem?.image?.isGIF == false,
@@ -243,15 +245,12 @@ struct ContentView: View {
                         settingsShortcut: shortcuts.settingsShortcut?.displayName,
                         onSelect: performAction, onDismiss: dismissMenus
                     )
-                    .transition(ClipboardMenuMotion.transition)
-                    .padding(.bottom, geometry.size.height - actionsControlFrame.minY + footerGlassInset
-                             + PasketPickerLayout.triggerGap)
-                    .padding(.trailing, geometry.size.width - actionsControlFrame.maxX)
                 }
+                .transition(ClipboardMenuMotion.transition)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-            .animation(reduceMotion ? nil : ClipboardMenuMotion.animation, value: isActionsMenuPresented)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(reduceMotion ? nil : ClipboardMenuMotion.animation, value: isActionsMenuPresented)
         .allowsHitTesting(isActionsMenuPresented)
         .accessibilityHidden(!isActionsMenuPresented)
     }
@@ -274,7 +273,7 @@ struct ContentView: View {
         .onChange(of: store.presentationID) {
             isOptionHeld = false
             isFilterMenuPresented = false
-            isActionsMenuPresented = false
+            actionsAnchor = nil
             isPasteMenuPresented = false
             reversePasteOrder = true
             textSeparator = .newline
@@ -380,7 +379,7 @@ struct ContentView: View {
                 .accessibilityIdentifier("resetClipboardFilter")
             }
             Button {
-                isActionsMenuPresented = false
+                actionsAnchor = nil
                 isPasteMenuPresented = false
                 searchFocused = false
                 isFilterMenuPresented.toggle()
@@ -525,6 +524,9 @@ struct ContentView: View {
         }
         .buttonStyle(HistoryRowButtonStyle())
         .focusable(false)
+        .gesture(HistorySecondaryClick { location in
+            openHistoryActions(for: item.id, at: .pointer(location))
+        })
         .simultaneousGesture(TapGesture(count: 2).onEnded {
             guard NSEvent.modifierFlags.intersection([.command, .shift, .control, .option]).isEmpty else { return }
             store.selectedID = item.id
@@ -534,15 +536,10 @@ struct ContentView: View {
         .accessibilityLabel("\(item.title), \(item.kind.title), from \(item.source.name)")
         .accessibilityValue(store.searchesImageText && !store.query.isEmpty ? item.imageTextMatch ?? "" : "")
         .accessibilityAddTraits(store.selectedIDs.contains(item.id) ? .isSelected : [])
-        .task(id: item.copiedAt) { await store.loadThumbnail(for: item) }
-        .contextMenu {
-            let ids = store.selectedIDs.contains(item.id) ? store.selectedIDs : [item.id]
-            Button(ids.count > 1 ? "Delete \(ids.count) Selected Items…" : "Delete", role: .destructive) {
-                if !store.selectedIDs.contains(item.id) { store.selectedID = item.id }
-                requestDeletion(ids)
-            }
-            .disabled(store.isDebugMode || store.isStorageBlocked)
+        .accessibilityAction(named: Text("Show Actions")) {
+            openHistoryActions(for: item.id, at: .footer)
         }
+        .task(id: item.copiedAt) { await store.loadThumbnail(for: item) }
     }
 
     @ViewBuilder
@@ -1004,8 +1001,19 @@ struct ContentView: View {
     private func toggleActionsMenu() {
         let wasPresented = isActionsMenuPresented
         dismissMenus()
-        isActionsMenuPresented = !wasPresented
-        searchFocused = wasPresented
+        if !wasPresented {
+            actionsAnchor = .footer
+            searchFocused = false
+        }
+    }
+
+    private func openHistoryActions(for id: UUID, at anchor: ClipboardActionsAnchor) {
+        guard !isDialogPresented, !shortcuts.isRecording else { return }
+        if store.selectedIDs.contains(id) { store.focusSelection(id) }
+        else { store.select(id) }
+        dismissMenus()
+        actionsAnchor = anchor
+        searchFocused = false
     }
 
     private func performAction(_ action: ClipboardActionsMenu.Action) {
@@ -1031,9 +1039,57 @@ struct ContentView: View {
 
     private func dismissMenus() {
         isFilterMenuPresented = false
-        isActionsMenuPresented = false
+        actionsAnchor = nil
         isPasteMenuPresented = false
         searchFocused = true
+    }
+}
+
+private enum ClipboardActionsAnchor {
+    case footer
+    case pointer(CGPoint)
+}
+
+private struct ClipboardActionsLayout: Layout {
+    let anchor: ClipboardActionsAnchor
+    let footerFrame: CGRect
+    let footerInset: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let menu = subviews.first else { return }
+        let size = menu.sizeThatFits(.unspecified)
+        let gap = PasketPickerLayout.triggerGap
+        let inset = PasketShape.menuInset
+        let origin: CGPoint
+        switch anchor {
+        case .footer:
+            origin = CGPoint(x: footerFrame.maxX - size.width, y: footerFrame.minY - footerInset - gap - size.height)
+        case .pointer(let point):
+            let y = point.y + gap + size.height <= bounds.height - inset ? point.y + gap : point.y - gap - size.height
+            origin = CGPoint(x: point.x + gap, y: y)
+        }
+        menu.place(at: CGPoint(x: bounds.minX + max(inset, min(origin.x, bounds.width - size.width - inset)),
+                               y: bounds.minY + max(inset, min(origin.y, bounds.height - size.height - inset))),
+                   proposal: ProposedViewSize(size))
+    }
+}
+
+private struct HistorySecondaryClick: NSGestureRecognizerRepresentable {
+    let onClick: (CGPoint) -> Void
+
+    func makeNSGestureRecognizer(context: Context) -> NSClickGestureRecognizer {
+        let recognizer = NSClickGestureRecognizer()
+        recognizer.buttonMask = 0x2
+        return recognizer
+    }
+
+    func handleNSGestureRecognizerAction(_ recognizer: NSClickGestureRecognizer, context: Context) {
+        guard recognizer.state == .ended else { return }
+        onClick(context.converter.location(in: .named("clipboardPanel")))
     }
 }
 

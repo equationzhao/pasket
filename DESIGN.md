@@ -315,11 +315,13 @@ Disabled rows use 0.35 opacity and do not show hover or press feedback. Mouse ex
 the highlighted row in these menus; arrow keys can establish a highlight again.
 The paste menu retains the last active row for Return and continued arrow navigation after
 mouse exit, so clearing a hover cannot unexpectedly switch the action to Paste Together.
-The history Actions menu opens above the footer's Actions button. It uses the shared menu surface
-and row style, with section headings aligned to the 8-point separator and row inset. Keyboard
-navigation skips disabled actions. Return activates the highlighted action and Escape returns focus
-to search. Keep number shortcuts in the paste options menu. Both footer menus fade and move
-6 points toward or away from the trigger using the same spring timing as pickers.
+The history Actions menu opens above the footer's Actions button or next to a secondary click
+on a history row. Keep its full bounds inside the panel. A secondary click on an unselected row
+selects that row. A click on a selected row focuses it and keeps the whole selection. The menu uses the shared surface and row style, with section
+headings aligned to the 8-point separator and row inset. Keyboard navigation skips disabled
+actions. Return activates the highlighted action and Escape returns focus to search. Keep number
+shortcuts in the paste options menu. Both menus fade and move 6 points using the same spring
+timing as pickers.
 Select Recent fades into the footer when a batch is available. Selection highlights fade and the
 footer count uses a numeric transition without changing history row geometry. Reduce Motion makes
 these updates immediate.
