@@ -36,7 +36,10 @@ final class ClipboardStore {
     private(set) var isPaused = false
     private(set) var isCopying = false
     private(set) var isCopyingImageText = false
+    private var imageTextCopyProgressPresentation: UUID?
+    var showsImageTextCopyProgress: Bool { imageTextCopyProgressPresentation == presentationID }
     private(set) var searchesImageText: Bool
+    private(set) var imageTextMode: ClipboardImageText.Mode
     private(set) var copiedChangeCount: Int?
     private(set) var isDeletingUnavailableFiles = false
     private(set) var clipboardAccessDenied = false {
@@ -98,10 +101,22 @@ final class ClipboardStore {
     @ObservationIgnored private let persistence: ClipboardPersistence
     @ObservationIgnored private let pasteboard: NSPasteboard
     @ObservationIgnored private let imageTextDefaults: UserDefaults
+    @ObservationIgnored private let recognizeImageText: ClipboardImageText.Recognizer
+    private struct ImageTextRequest: Hashable {
+        let id: UUID
+        let fileName: String
+        let mode: ClipboardImageText.Mode
+    }
+    private struct ImageTextResult {
+        let text: String
+        var cacheError: (any Error)?
+    }
+    @ObservationIgnored private var imageTextRequests: [ImageTextRequest: Task<ImageTextResult, Error>] = [:]
     @ObservationIgnored private var imageRecognitionTask: Task<Void, Never>?
-    @ObservationIgnored private var clearImageTextTask: Task<Void, Never>?
+    @ObservationIgnored private var imageTextCacheTask: Task<Void, Error>?
     @ObservationIgnored private var imageRecognitionNeedsScan = false
     private static let imageTextSearchKey = "searchesClipboardImageText"
+    private static let imageTextModeKey = "clipboardImageTextMode"
     @ObservationIgnored private let monitor: ClipboardMonitor
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var captureTask: Task<Void, Never>?
@@ -141,12 +156,15 @@ final class ClipboardStore {
 
     init(directory: URL = ClipboardPersistence.applicationDirectory(), pasteboard: NSPasteboard = .general,
          filterPreferences: ClipboardFilterPreferences? = nil, statisticsDefaults: UserDefaults = .standard,
-         imageTextDefaults: UserDefaults = .standard) {
+         imageTextDefaults: UserDefaults = .standard,
+         recognizeImageText: @escaping ClipboardImageText.Recognizer = ClipboardImageText.recognizeText) {
         self.filterPreferences = filterPreferences ?? ClipboardFilterPreferences()
         copyStatistics = HistoryStatistics(defaults: statisticsDefaults, storageKey: "clipboardDailyCopyCounts")
         persistence = ClipboardPersistence(directory: directory)
         self.imageTextDefaults = imageTextDefaults
+        self.recognizeImageText = recognizeImageText
         searchesImageText = imageTextDefaults.bool(forKey: Self.imageTextSearchKey)
+        imageTextMode = ClipboardImageText.Mode(rawValue: imageTextDefaults.string(forKey: Self.imageTextModeKey) ?? "") ?? .accurate
         self.pasteboard = pasteboard
         pasteQueue = ClipboardPasteQueue(clipboardChangeCount: { pasteboard.changeCount })
         monitor = ClipboardMonitor(pasteboard: pasteboard)
@@ -196,7 +214,7 @@ final class ClipboardStore {
             && selectedIDs.isDisjoint(with: unavailableItems) && !isLoading && !isCopying
     }
     var canCopySelectedImageText: Bool {
-        guard !isDebugMode, !isLoading, !storageBlocked, !isCopyingImageText,
+        guard !isDebugMode, !isLoading, !storageBlocked, !stopRequested, !isCopyingImageText,
               selectedIDs.count == 1, let item = selectedItem, let image = item.image else { return false }
         return !image.isGIF && !unavailableItems.contains(item.id)
     }
@@ -290,19 +308,27 @@ final class ClipboardStore {
             scheduleImageRecognition()
         } else {
             imageRecognitionTask?.cancel()
-            let recognition = imageRecognitionTask
-            let previousClear = clearImageTextTask
-            clearImageTextTask = Task { [weak self, persistence] in
-                await recognition?.value
-                await previousClear?.value
+            let pendingWrite = imageTextCacheTask
+            imageTextCacheTask = Task { [weak self, persistence] in
+                _ = await pendingWrite?.result
                 do {
                     try await persistence.clearImageText()
                 } catch {
                     self?.toasts.show(error.localizedDescription, source: .imageText,
                                      title: "Could Not Clear Image Text", style: .error)
+                    throw error
                 }
             }
         }
+        if !query.isEmpty { scheduleReload(preservingSelection: true) }
+    }
+
+    func setImageTextMode(_ mode: ClipboardImageText.Mode) {
+        guard searchesImageText, !isLoading, !storageBlocked, imageTextMode != mode else { return }
+        imageTextMode = mode
+        imageTextDefaults.set(mode.rawValue, forKey: Self.imageTextModeKey)
+        imageRecognitionTask?.cancel()
+        scheduleImageRecognition()
         if !query.isEmpty { scheduleReload(preservingSelection: true) }
     }
 
@@ -312,17 +338,21 @@ final class ClipboardStore {
         let presentation = presentationID
         isCopyingImageText = true
         toasts.dismiss(source: .imageText)
-        defer { isCopyingImageText = false }
+        let progressDeadline = ContinuousClock.now + .milliseconds(300)
+        let progress = Task {
+            try? await Task.sleep(until: progressDeadline)
+            guard !Task.isCancelled, !stopRequested, presentationID == presentation else { return }
+            imageTextCopyProgressPresentation = presentation
+        }
+        defer {
+            progress.cancel()
+            imageTextCopyProgressPresentation = nil
+            isCopyingImageText = false
+        }
         do {
-            let text: String
-            if searchesImageText, let recognized = try await persistence.imageText(for: item.id, image: image),
-               !recognized.isEmpty {
-                text = recognized
-            } else {
-                let data = try await persistence.imageData(image)
-                text = try await ClipboardImageText.recognizeText(in: data)
-            }
-            guard !Task.isCancelled, presentationID == presentation else { return }
+            let result = try await requestImageText(for: item.id, image: image, mode: imageTextMode, priority: .userInitiated)
+            guard !Task.isCancelled, !stopRequested, presentationID == presentation else { return }
+            let text = result.text
             if text.isEmpty {
                 toasts.show("There is no recognizable text in this image.", source: .imageText,
                             title: "No Text Found", style: .information)
@@ -343,19 +373,60 @@ final class ClipboardStore {
             copyStatistics.recordEvent(at: Date())
             toasts.show("Text is ready to paste.", source: .imageText, title: "Copied Text", style: .success)
         } catch {
-            guard !Task.isCancelled, presentationID == presentation else { return }
+            guard !Task.isCancelled, !stopRequested, presentationID == presentation else { return }
             toasts.show(error.localizedDescription, source: .imageText,
                         title: "Could Not Copy Image Text", style: .error)
         }
+    }
+
+    private func requestImageText(for id: UUID, image: ClipboardImage, mode: ClipboardImageText.Mode,
+                                  priority: TaskPriority) async throws -> ImageTextResult {
+        let request = ImageTextRequest(id: id, fileName: image.fileName, mode: mode)
+        if let task = imageTextRequests[request] { return try await task.value }
+        let task = Task(priority: priority) { () throws -> ImageTextResult in
+            defer { imageTextRequests[request] = nil }
+            if searchesImageText {
+                _ = await imageTextCacheTask?.result
+                if searchesImageText, let text = try await persistence.imageText(for: id, image: image, mode: mode),
+                   !text.isEmpty {
+                    return ImageTextResult(text: text)
+                }
+            }
+            let data = try await persistence.imageData(image)
+            let text = try await recognizeImageText(data, mode)
+            do {
+                try await cacheImageText(text, for: id, image: image, mode: mode)
+                if priority == .userInitiated, searchesImageText, mode == imageTextMode, !text.isEmpty, !query.isEmpty {
+                    scheduleReload(preservingSelection: true)
+                }
+                return ImageTextResult(text: text)
+            } catch {
+                return ImageTextResult(text: text, cacheError: error)
+            }
+        }
+        imageTextRequests[request] = task
+        return try await task.value
+    }
+
+    private func cacheImageText(_ text: String, for id: UUID, image: ClipboardImage,
+                                mode: ClipboardImageText.Mode) async throws {
+        guard searchesImageText, !stopRequested else { return }
+        let pendingWrite = imageTextCacheTask
+        let task = Task { [persistence] in
+            _ = await pendingWrite?.result
+            try await persistence.saveImageText(text, for: id, image: image, mode: mode)
+        }
+        imageTextCacheTask = task
+        try await task.value
     }
 
     private func scheduleImageRecognition() {
         guard searchesImageText, hasStarted, !isLoading, !storageBlocked, !isDebugMode, !stopRequested else { return }
         imageRecognitionNeedsScan = true
         guard imageRecognitionTask == nil else { return }
-        let pendingClear = clearImageTextTask
+        let pendingWrite = imageTextCacheTask
         imageRecognitionTask = Task(priority: .utility) { [weak self] in
-            await pendingClear?.value
+            _ = await pendingWrite?.result
             await self?.indexImageText()
         }
     }
@@ -366,25 +437,27 @@ final class ClipboardStore {
             if imageRecognitionNeedsScan { scheduleImageRecognition() }
         }
         do {
+            let mode = imageTextMode
             while !Task.isCancelled, searchesImageText, !stopRequested {
                 imageRecognitionNeedsScan = false
-                let images = try await persistence.unrecognizedImages(limit: 8)
+                let images = try await persistence.unrecognizedImages(limit: 8, mode: mode)
                 if images.isEmpty { return }
                 var indexedText = false
                 for item in images {
                     try Task.checkCancellation()
                     guard let image = item.image else { continue }
-                    let text: String
+                    let result: ImageTextResult
                     do {
-                        let data = try await persistence.imageData(image)
-                        text = try await ClipboardImageText.recognizeText(in: data)
+                        result = try await requestImageText(for: item.id, image: image, mode: mode, priority: .utility)
                     } catch {
                         try Task.checkCancellation()
                         // A failed image can still be retried from Actions.
-                        text = ""
+                        try await cacheImageText("", for: item.id, image: image, mode: mode)
+                        continue
                     }
-                    try await persistence.saveImageText(text, for: item.id, image: image)
-                    indexedText = indexedText || !text.isEmpty
+                    try Task.checkCancellation()
+                    if let error = result.cacheError { throw error }
+                    indexedText = indexedText || !result.text.isEmpty
                 }
                 if indexedText, !query.isEmpty, isPresented {
                     await queryTask?.value
@@ -1162,7 +1235,7 @@ final class ClipboardStore {
         repeat {
             snapshot = try await persistence.resultSnapshot(query: requestedQuery, filter: requestedFilter, limit: limit,
                 retainingIDs: resets ? [] : Set(items.map(\.id)), level: level,
-                includesImageText: searchesImageText)
+                includesImageText: searchesImageText, imageTextMode: imageTextMode)
             guard generation == queryGeneration, !isDebugMode else { return }
             if !isSearch || snapshot.references.count > previousCount || level.next == nil { break }
             level = level.next!
@@ -1256,7 +1329,8 @@ final class ClipboardStore {
                 do {
                     guard generation == queryGeneration else { return }
                     let page = try await persistence.page(query: query, filter: filter, limit: pageSize, offset: offset,
-                                                          level: searchLevel, includesImageText: searchesImageText)
+                                                          level: searchLevel, includesImageText: searchesImageText,
+                                                          imageTextMode: imageTextMode)
                     guard generation == queryGeneration, !isDebugMode else { return }
                     // Offsets are meaningful only for the index that requested them.
                     guard page.items.map(\.id) == references.map(\.id) else {
@@ -1314,7 +1388,7 @@ final class ClipboardStore {
             await navigationTask?.value
             await queryTask?.value
             await saveTask?.value
-            await clearImageTextTask?.value
+            _ = await imageTextCacheTask?.result
             for task in Array(pageLoads.values) { await task.value }
         } while generation != queryGeneration || !pageLoads.isEmpty
         await loadSelection()

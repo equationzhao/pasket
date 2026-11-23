@@ -149,11 +149,16 @@ actor ClipboardPersistence {
 
     func item(_ id: UUID) throws -> ClipboardItem? { try item(id, in: openDatabase()) }
 
-    func unrecognizedImages(limit: Int) throws -> [ClipboardItem] {
+    private func imageTextColumn(for mode: ClipboardImageText.Mode) -> String {
+        mode == .accurate ? "image_text" : "fast_image_text"
+    }
+
+    func unrecognizedImages(limit: Int, mode: ClipboardImageText.Mode = .accurate) throws -> [ClipboardItem] {
         let database = try openDatabase()
         var items: [ClipboardItem] = []
         try database.query("""
-            SELECT payload FROM items WHERE kind = 'image' AND image_name LIKE '%.png' AND image_text IS NULL
+            SELECT payload FROM items
+            WHERE kind = 'image' AND image_name LIKE '%.png' AND \(imageTextColumn(for: mode)) IS NULL
             ORDER BY copied_at DESC, position DESC, id LIMIT ?
             """, [.integer(limit)]) {
             items.append(try JSONDecoder().decode(ClipboardItem.self, from: ClipboardDatabase.data($0, 0)))
@@ -161,34 +166,42 @@ actor ClipboardPersistence {
         return items
     }
 
-    func imageText(for id: UUID, image: ClipboardImage) throws -> String? {
+    func imageText(for id: UUID, image: ClipboardImage, mode: ClipboardImageText.Mode = .accurate) throws -> String? {
         let database = try openDatabase()
         var text: String?
-        try database.query("SELECT image_text FROM items WHERE id = ? AND image_name = ? AND image_text IS NOT NULL",
+        let column = imageTextColumn(for: mode)
+        try database.query("SELECT \(column) FROM items WHERE id = ? AND image_name = ? AND \(column) IS NOT NULL",
                            [.text(id.uuidString), .text(image.fileName)]) {
             text = ClipboardDatabase.text($0, 0)
         }
         return text
     }
 
-    func saveImageText(_ text: String, for id: UUID, image: ClipboardImage) throws {
+    func saveImageText(_ text: String, for id: UUID, image: ClipboardImage,
+                       mode: ClipboardImageText.Mode = .accurate) throws {
         try Task.checkCancellation()
         let database = try openDatabase()
-        try database.execute("UPDATE items SET image_text = ? WHERE id = ? AND image_name = ? AND image_text IS NULL",
+        let column = imageTextColumn(for: mode)
+        let available = text.isEmpty ? "\(column) IS NULL" : "(\(column) IS NULL OR \(column) = '')"
+        try database.execute("UPDATE items SET \(column) = ? WHERE id = ? AND image_name = ? AND \(available)",
                              [.text(text), .text(id.uuidString), .text(image.fileName)])
     }
 
     func clearImageText() throws {
         let database = try openDatabase()
         try database.execute("PRAGMA secure_delete = ON")
-        try database.execute("UPDATE items SET image_text = NULL WHERE image_text IS NOT NULL")
+        try database.execute("""
+            UPDATE items SET image_text = NULL, fast_image_text = NULL
+            WHERE image_text IS NOT NULL OR fast_image_text IS NOT NULL
+            """)
     }
 
     func page(query: String = "", filter: ClipboardFilter = .all, limit: Int = 50, offset: Int = 0,
-              level: ClipboardSearch.Level = .fuzzy, includesImageText: Bool = false) throws -> ClipboardPage {
+              level: ClipboardSearch.Level = .fuzzy, includesImageText: Bool = false,
+              imageTextMode: ClipboardImageText.Mode = .accurate) throws -> ClipboardPage {
         let database = try openDatabase()
         let search = ClipboardSearch(query, level: level)
-        let imageText = includesImageText && !search.isEmpty ? "image_text" : "NULL"
+        let imageText = includesImageText && !search.isEmpty ? imageTextColumn(for: imageTextMode) : "NULL"
         let (clause, values, ordering) = try resultQuery(search, filter: filter, imageText: imageText, in: database)
         var items: [ClipboardItem] = []
         try database.query("SELECT summary, \(imageText) FROM items" + clause + " ORDER BY " + ordering + " LIMIT ? OFFSET ?",
@@ -204,7 +217,8 @@ actor ClipboardPersistence {
     // Index and summaries are read in one actor turn, using exactly the same ranking as pages.
     func resultSnapshot(query: String, filter: ClipboardFilter, limit: Int,
                         retainingIDs: Set<UUID> = [], level: ClipboardSearch.Level = .fuzzy,
-                        includesImageText: Bool = false) throws -> ClipboardResultSnapshot {
+                        includesImageText: Bool = false,
+                        imageTextMode: ClipboardImageText.Mode = .accurate) throws -> ClipboardResultSnapshot {
         let signposter = HistoryPerformance.signposter
         let interval = signposter.beginInterval("History Result Snapshot", id: signposter.makeSignpostID())
         var references: [ClipboardHistoryReference] = []
@@ -217,7 +231,7 @@ actor ClipboardPersistence {
         }
         let database = try openDatabase()
         let search = ClipboardSearch(query, level: level)
-        let imageText = includesImageText && !search.isEmpty ? "image_text" : "NULL"
+        let imageText = includesImageText && !search.isEmpty ? imageTextColumn(for: imageTextMode) : "NULL"
         let (clause, values, ordering) = try resultQuery(search, filter: filter, imageText: imageText, in: database)
         try database.query("SELECT id, copied_at FROM items" + clause + " ORDER BY " + ordering, values) { row in
             try Task.checkCancellation()
@@ -297,7 +311,7 @@ actor ClipboardPersistence {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let database = try ClipboardDatabase(url: databaseURL)
         let version = try database.integer("PRAGMA user_version")
-        guard version <= 2 else { throw ClipboardStorageError.unsupportedVersion }
+        guard version <= 3 else { throw ClipboardStorageError.unsupportedVersion }
         guard version >= 0 else { throw ClipboardStorageError.invalidHistory }
         if version == 0 {
             guard try database.integer("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'") == 0 else {
@@ -316,7 +330,7 @@ actor ClipboardPersistence {
                         copied_at REAL NOT NULL, position INTEGER NOT NULL, has_image_preview INTEGER NOT NULL,
                         text_bytes INTEGER NOT NULL, image_bytes INTEGER NOT NULL,
                         image_name TEXT NOT NULL, thumbnail_name TEXT NOT NULL, summary BLOB NOT NULL, payload BLOB NOT NULL,
-                        image_text TEXT
+                        image_text TEXT, fast_image_text TEXT
                     )
                     """)
                 try database.execute("CREATE INDEX items_recency ON items(copied_at DESC, position DESC, id)")
@@ -325,12 +339,13 @@ actor ClipboardPersistence {
                 for item in history.items.reversed() { try upsert(item, in: database) }
                 try writeSettings(history, in: database)
                 try enforceLimits(in: database)
-                try database.execute("PRAGMA user_version = 2")
+                try database.execute("PRAGMA user_version = 3")
             }
-        } else if version == 1 {
+        } else if version < 3 {
             try database.transaction {
-                try database.execute("ALTER TABLE items ADD COLUMN image_text TEXT")
-                try database.execute("PRAGMA user_version = 2")
+                if version == 1 { try database.execute("ALTER TABLE items ADD COLUMN image_text TEXT") }
+                try database.execute("ALTER TABLE items ADD COLUMN fast_image_text TEXT")
+                try database.execute("PRAGMA user_version = 3")
             }
         }
         // Only collect media after the schema and any legacy import have committed.
@@ -391,6 +406,7 @@ actor ClipboardPersistence {
                 position=excluded.position, has_image_preview=excluded.has_image_preview,
                 text_bytes=excluded.text_bytes, image_bytes=excluded.image_bytes,
                 image_text=CASE WHEN items.image_name = excluded.image_name THEN items.image_text END,
+                fast_image_text=CASE WHEN items.image_name = excluded.image_name THEN items.fast_image_text END,
                 image_name=excluded.image_name, thumbnail_name=excluded.thumbnail_name,
                 summary=excluded.summary, payload=excluded.payload
             """, [.text(item.id.uuidString), .text(item.fingerprint), .text(item.kind.rawValue), .text(item.title), .text(item.content),

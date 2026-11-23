@@ -264,6 +264,11 @@ History rows, cards, and buttons retain their subtle content and interaction fil
 of acquiring individual glass layers. Floating menus remain outside `PasketSurface` so
 their material and option labels are not part of the main panel's glass content.
 
+Manual image text extraction replaces the left footer status after 300 milliseconds with
+a small spinner and a 12-point secondary label. It uses the collection control's height
+and horizontal inset so the footer stays aligned. Reduce Motion uses a static hourglass.
+Background image indexing runs silently.
+
 Classic retains the existing behind-window HUD material, white wash, and panel outline.
 Its custom menus use `.regularMaterial` without an additional solid color fill or tint,
 with the existing outline and shadow. Both appearances preserve view identity when

@@ -752,12 +752,7 @@ struct ContentView: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
-            collectionControl
-            Text("\(store.isDebugMode ? store.displayedItems.count : store.totalCount) items")
-                .font(.system(size: 12))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .help("Change history limits in Settings → History. Text entries are limited to 2,000 characters.")
+            footerStatus
             Spacer()
             ViewThatFits(in: .horizontal) {
                 Text("↑ ↓ Navigate · Tab Select / Deselect").fixedSize()
@@ -829,6 +824,37 @@ struct ContentView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+
+    private var footerStatus: some View {
+        Group {
+            if store.showsImageTextCopyProgress {
+                HStack(spacing: 6) {
+                    Group {
+                        if reduceMotion { Image(systemName: "hourglass") }
+                        else { ProgressView().controlSize(.small) }
+                    }
+                    .accessibilityHidden(true)
+                    Text("Extracting text from image…")
+                        .lineLimit(1)
+                        .accessibilityIdentifier("copyImageTextProgress")
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 9)
+                .frame(minHeight: 28)
+            } else {
+                HStack(spacing: 6) {
+                    collectionControl
+                    Text("\(store.isDebugMode ? store.displayedItems.count : store.totalCount) items")
+                        .font(.system(size: 12))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .help("Change history limits in Settings → History. Text entries are limited to 2,000 characters.")
+                }
+                .fixedSize()
+            }
+        }
     }
 
     private var selectionCount: some View {

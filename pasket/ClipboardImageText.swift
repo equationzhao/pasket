@@ -2,9 +2,18 @@ import Foundation
 import Vision
 
 nonisolated enum ClipboardImageText {
-    static func recognizeText(in data: Data) async throws -> String {
+    enum Mode: String, CaseIterable, Sendable {
+        case accurate, fast
+
+        var title: String { self == .accurate ? "Accurate" : "Fast" }
+    }
+
+    typealias Recognizer = @Sendable (Data, Mode) async throws -> String
+
+    @Sendable
+    static func recognizeText(in data: Data, mode: Mode) async throws -> String {
         var request = RecognizeTextRequest()
-        request.recognitionLevel = .accurate
+        request.recognitionLevel = mode == .accurate ? .accurate : .fast
         request.automaticallyDetectsLanguage = true
         request.usesLanguageCorrection = false
         let supported = request.supportedRecognitionLanguages

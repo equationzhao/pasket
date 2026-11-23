@@ -17,6 +17,7 @@ struct ClipboardTests {
         try await persistence.save(ClipboardHistory(items: [imageItem, text]))
 
         let database = try ClipboardDatabase(url: fixture.directory.appendingPathComponent("history.sqlite"))
+        try database.execute("ALTER TABLE items DROP COLUMN fast_image_text")
         try database.execute("ALTER TABLE items DROP COLUMN image_text")
         try database.execute("PRAGMA user_version = 1")
         let upgraded = ClipboardPersistence(directory: fixture.directory)
@@ -35,11 +36,73 @@ struct ClipboardTests {
         #expect(imagePage.items.first?.imageTextMatch?.contains("付款编号") == true)
         #expect(try await upgraded.page(query: "付款编号", filter: .text, includesImageText: true).items.isEmpty)
 
+        let versionTwo = try ClipboardDatabase(url: fixture.directory.appendingPathComponent("history.sqlite"))
+        try versionTwo.execute("ALTER TABLE items DROP COLUMN fast_image_text")
+        try versionTwo.execute("PRAGMA user_version = 2")
+        #expect(try await upgraded.imageText(for: imageItem.id, image: image) == "Invoice · Payment reference 付款编号")
+        try await upgraded.saveImageText("Shipping code 7315", for: imageItem.id, image: image, mode: .fast)
+        #expect(try await upgraded.page(query: "Shipping code", includesImageText: true, imageTextMode: .fast)
+            .items.map(\.id) == [imageItem.id])
+        #expect(try await upgraded.page(query: "付款编号", includesImageText: true, imageTextMode: .fast).items.isEmpty)
+
         try await upgraded.clearImageText()
         #expect(try await upgraded.imageText(for: imageItem.id, image: image) == nil)
+        #expect(try await upgraded.imageText(for: imageItem.id, image: image, mode: .fast) == nil)
         try await upgraded.apply([.delete(imageItem.id)])
         try await upgraded.saveImageText("Payment reference", for: imageItem.id, image: image)
         #expect(try await upgraded.page(query: "付款编号", includesImageText: true).items.isEmpty)
+        await fixture.cleanUp()
+    }
+
+    @Test func sharesBackgroundImageRecognitionWithManualCopyAndKeepsModesSeparate() async throws {
+        let probe = ImageTextProbe()
+        let fixture = try Fixture(recognizeImageText: { _, mode in await probe.recognize(mode) })
+        let persistence = ClipboardPersistence(directory: fixture.directory)
+        let item = try await persistence.importImage(Self.smallPNG(), source: .unknown, at: Date())
+        let image = try #require(item.image)
+        try await persistence.save(ClipboardHistory(items: [item]))
+        await fixture.start()
+        fixture.store.prepareForPresentation()
+        fixture.store.select(item.id)
+
+        #expect(fixture.store.imageTextMode == .accurate)
+        fixture.store.setSearchesImageText(true)
+        for _ in 0..<100 {
+            if await !probe.modes.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(await probe.modes == [.accurate])
+        #expect(!fixture.store.showsImageTextCopyProgress)
+
+        let copy = Task { await fixture.store.copySelectedImageText() }
+        await Task.yield()
+        #expect(!fixture.store.showsImageTextCopyProgress)
+        for _ in 0..<100 {
+            if fixture.store.showsImageTextCopyProgress { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(fixture.store.showsImageTextCopyProgress)
+        #expect(await probe.modes == [.accurate])
+        await probe.finish()
+        await copy.value
+        #expect(!fixture.store.showsImageTextCopyProgress)
+        #expect(fixture.pasteboard.string(forType: .string) == "Payment reference 4512")
+        #expect(try await persistence.imageText(for: item.id, image: image) == "Payment reference 4512")
+
+        fixture.store.setImageTextMode(.fast)
+        await fixture.store.copySelectedImageText()
+        #expect(!fixture.store.showsImageTextCopyProgress)
+        #expect(fixture.pasteboard.string(forType: .string) == "Shipping code 7315")
+        #expect(try await persistence.imageText(for: item.id, image: image, mode: .fast) == "Shipping code 7315")
+        #expect(try await persistence.imageText(for: item.id, image: image) == "Payment reference 4512")
+        await fixture.store.copySelectedImageText()
+        #expect(await probe.modes == [.accurate, .fast])
+
+        fixture.store.setSearchesImageText(false)
+        await fixture.store.flush()
+        #expect(try await persistence.imageText(for: item.id, image: image, mode: .fast) == nil)
+        await fixture.restart()
+        #expect(fixture.store.imageTextMode == .fast)
         await fixture.cleanUp()
     }
 
@@ -47,6 +110,7 @@ struct ClipboardTests {
         let fixture = try Fixture()
         let persistence = ClipboardPersistence(directory: fixture.directory)
         let data = try Self.screenshotPNG(text: "PAYMENT REFERENCE 4512")
+        #expect(try await ClipboardImageText.recognizeText(in: data, mode: .fast) == "PAYMENT REFERENCE 4512")
         let item = try await persistence.importImage(data, source: .unknown, at: Date())
         try await persistence.save(ClipboardHistory(items: [item]))
         fixture.write("Original clipboard text")
@@ -90,6 +154,36 @@ struct ClipboardTests {
         await fixture.store.flush()
         #expect(fixture.store.items.isEmpty)
         #expect(try await persistence.imageText(for: item.id, image: savedImage) == nil)
+        await fixture.cleanUp()
+    }
+
+    @Test func loadsLaterSearchPagesUsingTheSelectedImageTextMode() async throws {
+        let fixture = try Fixture()
+        let persistence = ClipboardPersistence(directory: fixture.directory)
+        let pageSize = ClipboardHistoryLayout.pageSize
+        let now = Date()
+        let textItems = (0..<pageSize).map {
+            ClipboardItem.text("Shipping code \($0)", source: .unknown, at: now.addingTimeInterval(-Double($0)))
+        }
+        let imageItem = try await persistence.importImage(Self.smallPNG(), source: .unknown,
+                                                          at: now.addingTimeInterval(-Double(pageSize)))
+        let image = try #require(imageItem.image)
+        try await persistence.save(ClipboardHistory(items: textItems + [imageItem]))
+        await fixture.start()
+        try await persistence.saveImageText("Payment reference 4512", for: imageItem.id, image: image, mode: .accurate)
+        try await persistence.saveImageText("Shipping code 7315", for: imageItem.id, image: image, mode: .fast)
+
+        fixture.store.setSearchesImageText(true)
+        fixture.store.setImageTextMode(.fast)
+        fixture.store.query = "Shipping code"
+        await fixture.store.flush()
+        #expect(fixture.store.items.map(\.id) == textItems.map(\.id))
+        #expect(fixture.store.hasMoreItems)
+
+        await fixture.store.loadMore()
+        #expect(fixture.store.items.map(\.id) == textItems.map(\.id) + [imageItem.id])
+        #expect(fixture.store.items.last?.imageTextMatch == "Shipping code 7315")
+        #expect(!fixture.store.hasMoreItems)
         await fixture.cleanUp()
     }
 
@@ -2081,6 +2175,26 @@ struct ClipboardTests {
     }
 }
 
+private actor ImageTextProbe {
+    private(set) var modes: [ClipboardImageText.Mode] = []
+    private var isHolding = true
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func recognize(_ mode: ClipboardImageText.Mode) async -> String {
+        modes.append(mode)
+        if isHolding {
+            await withCheckedContinuation { continuations.append($0) }
+        }
+        return mode == .accurate ? "Payment reference 4512" : "Shipping code 7315"
+    }
+
+    func finish() {
+        isHolding = false
+        for continuation in continuations { continuation.resume() }
+        continuations.removeAll()
+    }
+}
+
 @MainActor
 private final class Fixture {
     let directory: URL
@@ -2089,13 +2203,14 @@ private final class Fixture {
     let defaults: UserDefaults
     private let suite = "ClipboardStatisticsTests.\(UUID())"
 
-    init(filterPreferences: ClipboardFilterPreferences? = nil) throws {
+    init(filterPreferences: ClipboardFilterPreferences? = nil,
+         recognizeImageText: @escaping ClipboardImageText.Recognizer = ClipboardImageText.recognizeText) throws {
         let root = ProcessInfo.processInfo.environment["PASKET_TEST_DIRECTORY"] ?? NSTemporaryDirectory()
         directory = URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent("pasket-tests-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defaults = try #require(UserDefaults(suiteName: suite))
         store = ClipboardStore(directory: directory, pasteboard: pasteboard, filterPreferences: filterPreferences,
-                               statisticsDefaults: defaults, imageTextDefaults: defaults)
+                               statisticsDefaults: defaults, imageTextDefaults: defaults, recognizeImageText: recognizeImageText)
     }
 
     func start() async {

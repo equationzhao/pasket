@@ -14,7 +14,7 @@ struct ShortcutSettingsView: View {
     @State private var presentedPicker: SettingsPicker?
 
     private enum SettingsPicker: Equatable {
-        case typeFilter, appearance
+        case typeFilter, appearance, imageTextMode
     }
 
     var body: some View {
@@ -153,12 +153,27 @@ struct ShortcutSettingsView: View {
     private var textRecognitionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             SettingsSectionHeader(title: "Text Recognition")
-            SettingsToggleRow(
-                title: "Search Text in Images",
-                detail: "Recognize text in saved images on this Mac so it can be found in clipboard search.",
-                isOn: Binding(get: { store.searchesImageText }, set: { store.setSearchesImageText($0) }),
-                accessibilityIdentifier: "searchClipboardImageText"
-            )
+            VStack(alignment: .leading, spacing: 12) {
+                SettingsToggleRow(
+                    title: "Search Text in Images",
+                    detail: "Recognize text in saved images on this Mac so it can be found in clipboard search.",
+                    isOn: Binding(get: { store.searchesImageText }, set: { enabled in
+                        if !enabled, presentedPicker == .imageTextMode { presentedPicker = nil }
+                        store.setSearchesImageText(enabled)
+                    }),
+                    accessibilityIdentifier: "searchClipboardImageText"
+                )
+                if store.searchesImageText {
+                    SettingsControlRow(title: "Recognition Mode", detail: "Applies to search and Copy Text from Image.") {
+                        PasketPicker(title: "Recognition Mode", selection: Binding(
+                            get: { store.imageTextMode }, set: { store.setImageTextMode($0) }
+                        ), isPresented: pickerPresentation(.imageTextMode), options: ClipboardImageText.Mode.allCases) { mode in
+                            mode.title
+                        }
+                        .accessibilityIdentifier("clipboardImageTextMode")
+                    }
+                }
+            }
             .disabled(store.isLoading || store.isStorageBlocked)
             .padding(12)
             .modifier(SettingsCard())
