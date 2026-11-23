@@ -303,7 +303,11 @@ mouse exit, so clearing a hover cannot unexpectedly switch the action to Paste T
 The history Actions menu opens above the footer's Actions button. It uses the shared menu surface
 and row style, with section headings aligned to the 8-point separator and row inset. Keyboard
 navigation skips disabled actions. Return activates the highlighted action and Escape returns focus
-to search. Keep number shortcuts in the paste options menu.
+to search. Keep number shortcuts in the paste options menu. Both footer menus fade and move
+6 points toward or away from the trigger using the same spring timing as pickers.
+Select Recent fades into the footer when a batch is available. Selection highlights fade and the
+footer count uses a numeric transition without changing history row geometry. Reduce Motion makes
+these updates immediate.
 
 Prominent buttons use accent text, a 0.08 accent fill, and a 0.12 accent outline at rest.
 Hover increases the fill to 0.12 and the outline to 0.2; pressing increases the fill to 0.2.

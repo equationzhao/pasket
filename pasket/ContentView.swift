@@ -22,6 +22,7 @@ struct ContentView: View {
         store.selectedItem.map { PreviewIdentity(id: $0.id, copiedAt: $0.copiedAt) }
     }
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
     @State private var isFilterMenuPresented = false
     @State private var filterControlFrame: CGRect = .zero
@@ -88,13 +89,11 @@ struct ContentView: View {
             }
     }
 
-    @ViewBuilder
     private var pasteMenuOverlay: some View {
-        if isPasteMenuPresented {
-            GeometryReader { geometry in
-                ZStack(alignment: .bottomTrailing) {
-                    Color.clear.contentShape(Rectangle()).onTapGesture(perform: dismissMenus)
-                        .accessibilityHidden(true)
+        GeometryReader { geometry in
+            ZStack(alignment: .bottomTrailing) {
+                if isPasteMenuPresented {
+                    menuBackdrop
                     ClipboardPasteActionsMenu(canCombine: store.canCombineSelection,
                                               canPaste: store.canCopySelection && !store.isSearching && !store.pasteQueue.isPasting,
                                               showsNumberShortcuts: isOptionHeld,
@@ -102,17 +101,23 @@ struct ContentView: View {
                                               onPaste: { dismissMenus(); pasteCombinedSelection() },
                                               onQueue: { dismissMenus(); startPasteQueue() },
                                               onDismiss: dismissMenus)
-                        .padding(.bottom, geometry.size.height - pasteControlFrame.minY + 4)
+                        .transition(ClipboardMenuMotion.transition)
+                        .padding(.bottom, geometry.size.height - pasteControlFrame.minY + PasketPickerLayout.triggerGap)
                         .padding(.trailing, geometry.size.width - pasteControlFrame.maxX)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            .animation(reduceMotion ? nil : ClipboardMenuMotion.animation, value: isPasteMenuPresented)
         }
+        .allowsHitTesting(isPasteMenuPresented)
+        .accessibilityHidden(!isPasteMenuPresented)
     }
 
     private var menuBackdrop: some View {
         Color.clear.contentShape(Rectangle())
             .onTapGesture(perform: dismissMenus)
             .accessibilityHidden(true)
+            .transition(.identity)
     }
 
     private var historyLayout: some View {
@@ -235,11 +240,13 @@ struct ContentView: View {
                         settingsShortcut: shortcuts.settingsShortcut?.displayName,
                         onSelect: performAction, onDismiss: dismissMenus
                     )
+                    .transition(ClipboardMenuMotion.transition)
                     .padding(.bottom, geometry.size.height - actionsControlFrame.minY + PasketPickerLayout.triggerGap)
                     .padding(.trailing, geometry.size.width - actionsControlFrame.maxX)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            .animation(reduceMotion ? nil : ClipboardMenuMotion.animation, value: isActionsMenuPresented)
         }
         .allowsHitTesting(isActionsMenuPresented)
         .accessibilityHidden(!isActionsMenuPresented)
@@ -710,25 +717,30 @@ struct ContentView: View {
 
     private var selectRecentControl: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
-            if store.hasRecentCopies() {
-                Button(action: selectRecentCopies) {
-                    HStack(spacing: 8) {
-                        Text("Select Recent")
-                        ShortcutKeycap(key: "⇧⇥").foregroundStyle(.secondary).accessibilityHidden(true)
+            let hasBatch = store.hasRecentCopies()
+            VStack(spacing: 0) {
+                if hasBatch {
+                    Button(action: selectRecentCopies) {
+                        HStack(spacing: 8) {
+                            Text("Select Recent")
+                            ShortcutKeycap(key: "⇧⇥").foregroundStyle(.secondary).accessibilityHidden(true)
+                        }
                     }
+                    .buttonStyle(PasketButtonStyle())
+                    .controlSize(.small)
+                    .focusable(false)
+                    .fixedSize()
+                    .disabled(!store.canSelectRecentCopies())
+                    .help(store.query.isEmpty && store.filter == .all
+                          ? "Select the latest batch of copies (⇧Tab)"
+                          : "Clear search and choose All Types to select recent copies")
+                    .accessibilityLabel("Select recent copies")
+                    .accessibilityHint("Shift-Tab selects the latest batch of copies")
+                    .accessibilityIdentifier("selectRecentCopies")
+                    .transition(.opacity)
                 }
-                .buttonStyle(PasketButtonStyle())
-                .controlSize(.small)
-                .focusable(false)
-                .fixedSize()
-                .disabled(!store.canSelectRecentCopies())
-                .help(store.query.isEmpty && store.filter == .all
-                      ? "Select the latest batch of copies (⇧Tab)"
-                      : "Clear search and choose All Types to select recent copies")
-                .accessibilityLabel("Select recent copies")
-                .accessibilityHint("Shift-Tab selects the latest batch of copies")
-                .accessibilityIdentifier("selectRecentCopies")
             }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hasBatch)
         }
     }
 
@@ -756,10 +768,7 @@ struct ContentView: View {
             .help("Use arrow keys to move focus. Press Tab to select or deselect the focused item.")
             .accessibilityLabel("Use arrow keys to navigate and Tab to select or deselect")
             selectRecentControl
-            if store.selectedIDs.count > 1 {
-                Text("\(store.selectedIDs.count) Selected")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-            }
+            selectionCount
             Button(action: copySelection) {
                 HStack(spacing: 8) {
                     Text(pasteActionTitle)
@@ -820,6 +829,21 @@ struct ContentView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+
+    private var selectionCount: some View {
+        let count = store.selectedIDs.count
+        return VStack(spacing: 0) {
+            if count > 1 {
+                Text("\(count) Selected")
+                    .font(.system(size: 12))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: count)
     }
 
     private func handleToastAction(_ action: PasketToast.Action) {
@@ -996,6 +1020,13 @@ private struct WindowKeyStateObserver: NSViewRepresentable {
     }
 }
 
+private enum ClipboardMenuMotion {
+    static let animation = Animation.spring(response: 0.28, dampingFraction: 0.88)
+    static var transition: AnyTransition {
+        .opacity.combined(with: .offset(y: 6))
+    }
+}
+
 private enum PasketPickerLayout {
     static let optionGap: CGFloat = 2
     static let triggerGap: CGFloat = 4
@@ -1078,7 +1109,7 @@ private struct PasketPickerMenu<Selection: Hashable>: View {
         .onAppear {
             highlightedOption = selection
             isFocused = true
-            withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.88)) {
+            withAnimation(reduceMotion ? nil : ClipboardMenuMotion.animation) {
                 isExpanded = true
             }
         }
@@ -1531,6 +1562,7 @@ private struct HistoryRow: View {
                 .animation(nil, value: isSelected)
             PasketShape.control
                 .fill(Color.accentColor.opacity(isSelected ? 0.12 : 0))
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSelected)
             PasketShape.control
                 .fill(Color.accentColor.opacity(isFocused && isMarked ? 0.12 : 0))
         }
