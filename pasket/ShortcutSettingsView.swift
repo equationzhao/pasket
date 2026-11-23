@@ -5,16 +5,14 @@ import SwiftUI
 struct ShortcutSettingsView: View {
     @Bindable var shortcuts: GlobalShortcutManager
     @Bindable var store: ClipboardStore
-    @Bindable var dockIcon: DockIconPreferences
     @Bindable var accentColor: AccentColorPreferences
-    @Bindable var appearance: AppearancePreferences
     @Bindable var loginItem: LoginItemPreferences
     var onClose: () -> Void = {}
     @State private var focusedHistoryField: HistoryLimitField?
     @State private var presentedPicker: SettingsPicker?
 
     private enum SettingsPicker: Equatable {
-        case typeFilter, appearance, imageTextMode
+        case typeFilter, imageTextMode
     }
 
     var body: some View {
@@ -37,9 +35,7 @@ struct ShortcutSettingsView: View {
                             .accessibilityIdentifier("shortcutSettingsError")
                     }
 
-                    appearanceSection
                     accentColorSection
-                    dockIconSection
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 16)
@@ -213,23 +209,6 @@ struct ShortcutSettingsView: View {
         )
     }
 
-    private var appearanceSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SettingsSectionHeader(title: "Appearance")
-            SettingsControlRow(title: "Style", detail: appearance.appearance.explanation) {
-                PasketPicker(title: "Appearance", selection: Binding<AppearanceOption>(
-                    get: { appearance.appearance },
-                    set: { appearance.select($0) }
-                ), isPresented: pickerPresentation(.appearance), options: AppearanceOption.allCases) { option in
-                    option.title
-                }
-                .accessibilityIdentifier("appearanceStyle")
-            }
-            .padding(12)
-            .modifier(SettingsCard())
-        }
-    }
-
     private var accentColorSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             SettingsSectionHeader(title: "Accent color")
@@ -272,69 +251,6 @@ struct ShortcutSettingsView: View {
                     }
                 }
                 Text("Used for selections, buttons, and the collection indicator. System follows your macOS accent color.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(12)
-            .modifier(SettingsCard())
-        }
-    }
-
-    private var dockIconSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SettingsSectionHeader(title: "Dock icon")
-            VStack(alignment: .leading, spacing: 12) {
-                SettingsToggleRow(
-                    title: "Show in Dock",
-                    detail: "Show Pasket in the Dock, even when Settings is closed. Changes take effect immediately.",
-                    isOn: Binding(
-                        get: { dockIcon.showInDock },
-                        set: { dockIcon.setShowInDock($0) }
-                    ),
-                    accessibilityIdentifier: "showInDock"
-                )
-                Divider().opacity(0.35)
-                HStack {
-                    Text("Color")
-                        .font(.system(size: 13, weight: .medium))
-                    Spacer()
-                    Text(dockIcon.color.title)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 8) {
-                    ForEach(DockIconColor.allCases) { color in
-                        Button { dockIcon.select(color) } label: {
-                            VStack(spacing: 6) {
-                                Image(color.assetName)
-                                    .resizable()
-                                    .interpolation(.high)
-                                    .scaledToFit()
-                                    .frame(width: 64, height: 64)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 4)
-                                    .overlay {
-                                        PasketShape.control
-                                            .strokeBorder(dockIcon.color == color ? Color.accentColor : .clear,
-                                                          lineWidth: 2)
-                                    }
-                                Text(color.title)
-                                    .font(.system(size: 10, weight: dockIcon.color == color ? .medium : .regular))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
-                                    .foregroundStyle(dockIcon.color == color ? .primary : .secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(DockIconOptionButtonStyle())
-                        .help("Use \(color.title) Dock icon")
-                        .accessibilityLabel("\(color.title) Dock icon")
-                        .accessibilityAddTraits(dockIcon.color == color ? [.isSelected] : [])
-                        .accessibilityIdentifier("dockIcon\(color.rawValue.capitalized)")
-                    }
-                }
-                Text("The selected color is used when Show in Dock is enabled. The menu bar icon stays monochrome.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -879,26 +795,6 @@ struct ShortcutRecordingView: View {
     }
 }
 
-private struct DockIconOptionButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        let isInteracting = isEnabled && (isHovered || configuration.isPressed)
-        configuration.label
-            .background(alignment: .top) {
-                PasketShape.control
-                    .fill(.primary.opacity(isEnabled && configuration.isPressed ? 0.12 : isInteracting ? 0.06 : 0))
-                    .frame(height: 72)
-            }
-            .contentShape(Rectangle())
-            .onHover { isHovered = $0 }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isInteracting)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
-    }
-}
-
 private struct AccentColorSwatchButtonStyle: ButtonStyle {
     let isSelected: Bool
     @Environment(\.isEnabled) private var isEnabled
@@ -1315,11 +1211,9 @@ private struct SettingsSectionHeader: View {
 }
 
 private struct SettingsCard: ViewModifier {
-    @Environment(\.pasketAppearance) private var appearance
-
     func body(content: Content) -> some View {
         content
-            .background(.primary.opacity(appearance == .liquidGlass ? 0.08 : 0.035), in: PasketShape.card)
+            .background(.primary.opacity(0.08), in: PasketShape.card)
     }
 }
 

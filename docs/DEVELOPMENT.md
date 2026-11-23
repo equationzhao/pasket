@@ -30,24 +30,14 @@ suppresses future shortcut reminders when confirmed with Continue. Skipping with
 only dismisses the current launch; the next launch offers setup again if no shortcut is saved.
 Every relaunch rechecks both permissions and the saved shortcut. Opting out never suppresses
 missing permission sections, and existing saved shortcuts skip unnecessary shortcut guidance.
-Its menu bar icon is a fixed monochrome basket with a P monogram. Settings → Dock icon → Show in Dock
-controls whether Pasket appears in the Dock, including while Settings is open. It is off by default,
-applies immediately, and persists across relaunch. Clicking the Dock icon opens history or brings
-an open Settings window forward. The Dock icon color options
-are Space Silver (the default), Orange, Mint, Blue, Lavender, and Graphite. Selecting a color
-updates the running app's Dock icon immediately and saves it for the next launch. The bundled
-Finder icon stays Space Silver; the menu bar glyph stays monochrome.
+Its menu bar icon is a fixed monochrome basket with a P monogram. Pasket runs as a menu bar app.
 Settings → Accent color independently controls interface selections, buttons, and the collection
 indicator. Choose System (the default) to follow the macOS accent color, or Blue, Purple, Pink,
 Red, Orange, Yellow, Green, or Graphite. Changes apply immediately to history and Settings and
 save automatically for the next launch.
 
-Settings → Appearance selects Liquid Glass (the default) or Classic. Liquid Glass uses
-the native regular glass material for panels and custom menus and follows the system's
-Liquid Glass look and accessibility preferences. Classic preserves the frosted HUD
-panel background and regular-material menus. Switching applies immediately to existing
-windows and sheets and persists across launches independently of accent and Dock icon colors.
-Neither choice overrides the system's light or dark appearance.
+Pasket uses native Liquid Glass for panels and custom menus, following system appearance
+and accessibility preferences without overriding light or dark mode.
 
 The menu bar's Statistics entry opens a separate window with Copies and History opens pages by local date and 7-, 30-, and 90-day
 charts, daily counts, and previous/next period navigation. Both pages
@@ -68,7 +58,7 @@ are excluded. Metadata updates, save retries, retention, and history deletion do
 counts. Clipboard monitoring still polls, so changes overwritten between polls cannot be counted.
 
 History opens starts with its feature version. Each hidden-to-visible
-presentation counts once, including startup, shortcuts, menu actions, and Dock reopen.
+presentation counts once, including startup, shortcuts, menu actions, and reopening the app.
 Focusing an already visible panel, hiding it, or showing setup, Settings, or Statistics does not count.
 New events use the local Gregorian calendar when they occur; changing time zones does not
 reassign earlier counts. Missing dates display zero, and Today refreshes while the page is open.
@@ -462,10 +452,8 @@ inputs has caused a main-thread hang. Other windows and secure text fields retai
 Paste tests inject permissions, target state, keyboard release, and event delivery; they never send
 real keystrokes. They cover dismissal order, held keys, permission denial and revocation, target exit,
 app switches, clipboard changes, reopening, task cancellation, and timeout.
-Dock icon preference tests cover the defaults, unknown saved colors, persistence across relaunch,
-applying a selection only after its preference has been saved, and independent Dock visibility.
 Accent color preference tests cover the system default, unknown saved values, every color's
-persistence across relaunch, returning to System, and independence from the Dock icon preference.
+persistence across relaunch, and returning to System.
 
 For the desktop smoke test:
 
@@ -490,7 +478,7 @@ For the desktop smoke test:
 - Choose **… → Delete Unavailable Files**, **Copy to Clipboard**, or **Copy Text from Image**.
   Verify the left footer status expands in place and restores the count, and copy again
   while feedback is visible to check that the timer restarts. Verify hover pauses dismissal
-  and check light/dark appearance, Liquid Glass, Classic, and Reduce Motion. Save a file
+  and check light/dark appearance and Reduce Motion. Save a file
   and verify **File Saved** and **Show in Finder** share a single line.
   Verify a tag write failure shows **Failed to apply tags.** and the Finder action together below the title.
   Without paste permission, verify attempting to paste displays a native permission dialog with
@@ -503,21 +491,10 @@ For the desktop smoke test:
   or **Allow Clipboard Access…** menu action opens the permission dialog. Background polling must
   not reopen it after Cancel. Reopen history after restoring storage access and confirm
   **Save Failed** clears when storage recovers.
-- In Settings → Accent color, select each swatch and verify selections, buttons, the Dock icon
-  preview outline, and the history collection indicator use that color. Reopen history and Settings,
-  then relaunch to check persistence. Select System to restore the macOS accent and check light
-  and dark appearance. Changing the accent must preserve the selected Dock icon.
-- Open Settings and verify Show in Dock is off and no Dock entry appears on a fresh installation.
-  Turn it on and verify the Dock entry appears immediately with Space Silver.
-  Select each of the six icon previews; the Dock icon and selected preview should update immediately.
-  Close Settings with Escape, Command + W, or the close button and verify the Dock entry remains.
-  Click the Dock icon to open history; with Settings open, clicking it should bring Settings forward.
-  Repeatedly turn Show in Dock off and on and verify the Dock entry updates immediately while
-  the same Settings window remains visible, focused, and usable without losing its scroll position
-  or unsaved history limit edits. Close Settings immediately after toggling; it must stay closed.
-  Close and reopen Settings, then relaunch with each visibility option to confirm both visibility
-  and the selected color persist. The P menu bar glyph
-  must remain monochrome in light and dark appearance, including while changing icon colors.
+- In Settings → Accent color, select each swatch and verify selections, buttons, and the history
+  collection indicator use that color. Reopen history and Settings, then relaunch to check
+  persistence. Select System to restore the macOS accent and check light and dark appearance.
+- Verify Pasket has no Dock entry and its menu bar glyph remains monochrome in light and dark appearance.
 
 1. On a fresh installation, verify missing clipboard access appears before missing Accessibility
    access, and already granted permissions are skipped. Deny access or return from System Settings
@@ -651,7 +628,6 @@ the updated desktop checks above have not yet been reported.
 - `MyApp.swift`: menu bar entry and application scene.
 - `AppSetup.swift`: permission ordering and persisted shortcut setup completion.
 - `PasketMenuIcon.swift`: resolution-independent monochrome basket and P menu bar glyph.
-- `DockIconPreferences.swift`: saved Dock visibility and icon color selection.
 - `ApplicationController.swift`: panel, settings, focus restoration, and termination handling.
 - `AppRelaunch.swift`: launches the current app again and waits for the previous process to exit.
 - `ContentView.swift`: search, filters, previews, and history controls.

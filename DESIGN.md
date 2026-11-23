@@ -25,7 +25,6 @@ when the change belongs to every instance; avoid copying its implementation into
 | `PasketPickerLabel`, `PasketPickerMenu` | [ContentView.swift](pasket/ContentView.swift) | Shared trigger labels and option menus for history, Settings, and statistics |
 | `PasketCloseButton` | [ContentView.swift](pasket/ContentView.swift) | Window and notification close controls |
 | `PasketMenuItemStyle` | [ContentView.swift](pasket/ContentView.swift) | Custom menu item geometry, colors, feedback, and selected traits |
-| `PasketAppearance` | [AppearancePreferences.swift](pasket/AppearancePreferences.swift) | Shared, persisted surface appearance across windows and sheets |
 | `PasketSurface` | [ContentView.swift](pasket/ContentView.swift) | Main panel material, outline, and clipping |
 | `ClipboardMenuSurface` | [ContentView.swift](pasket/ContentView.swift) | Custom menu material, outline, and shadow |
 | `SettingsToggleRow` | [ShortcutSettingsView.swift](pasket/ShortcutSettingsView.swift) | Settings switch size, alignment, title, and explanation |
@@ -42,16 +41,14 @@ component instead of introducing another independent definition.
 | Role | Radius | Implementation and use |
 | --- | --- | --- |
 | Compact element | 6 | `PasketShape.compact`: keycaps and small numbered markers |
-| Control or selectable item | 8 | `PasketShape.control`: buttons, input outlines, menu items, history rows, and Dock icon options |
+| Control or selectable item | 8 | `PasketShape.control`: buttons, input outlines, menu items, and history rows |
 | Grouped content | 10 | `PasketShape.card`: Settings cards and shortcut recording area |
 | Custom menu container | 14 | `PasketShape.menu`: control radius plus the 6-point `menuInset` |
 | Main panel | 20 | Default radius of `PasketSurface` |
 
 Shared shapes use `RoundedRectangle` with `.continuous` corners. Use the same shape
 for an element's background, border, and rounded hit region. Hover, focus, selection,
-and press states must not change the corner geometry. Dock icon options use the same
-control shape for the selected outline and hover background; their full label remains
-clickable, including the caption.
+and press states must not change the corner geometry.
 
 Custom menus use `PasketShape.menuInset` on all sides. Keep the outer radius derived
 from the item radius and inset so changes preserve the relationship between the curves.
@@ -83,7 +80,7 @@ Align setting titles and explanations to the card's leading content edge. Align 
 switches to its trailing content edge. Let explanations wrap and increase the row height;
 do not truncate essential setting descriptions to force equal card heights.
 
-Use `SettingsToggleRow` for Start at Login, Show in Dock, automatic cleanup, and equivalent
+Use `SettingsToggleRow` for Start at Login, automatic cleanup, and equivalent
 Settings switches. It defines:
 
 - A leading title and a trailing native switch, vertically centered in a title row with
@@ -196,11 +193,9 @@ column with a 2-point gap, using the picker variant of `PasketMenuItemStyle`.
 Every option matches its trigger's measured width and height (26 points high in Settings,
 normally 30 elsewhere), rather than the 32-point grouped-menu row. A 14-point horizontal
 content inset matches the trigger's combined 9 + 5 inset.
-Use `ClipboardMenuSurface` for the continuous background around the options: native regular
-Liquid Glass in the Liquid Glass appearance, or regular material with a subtle outline and
-shadow in Classic. The background covers the spaces between options as well
-as the rows. Keep labels, icons, selection highlights, and hit regions sharp, and the
-decorative outline noninteractive.
+Use `ClipboardMenuSurface` for the continuous native regular Liquid Glass background around
+the options. The background covers the spaces between options as well as the rows. Keep
+labels, icons, selection highlights, and hit regions sharp.
 The menu has a 6-point inset on all sides, so its background is 12 points wider than the
 trigger while each option remains exactly trigger-sized. Offset the menu 6 points toward
 the leading edge to align the option column with the trigger, subject to window bounds.
@@ -249,16 +244,12 @@ content hierarchy, red for destructive actions even at rest, and explanatory tex
 Do not rely on color alone to communicate state.
 
 Reuse `PasketSurface` for main panels and `ClipboardMenuSurface` for custom menus.
-Settings exposes one Appearance picker, using `SettingsControlRow` and `PasketPicker`,
-with Liquid Glass (the default) and Classic options. The selection applies immediately,
-persists across launches, and is independent of accent and Dock icon colors.
-
 Liquid Glass uses the native `.glassEffect(.regular, in:)` on the complete panel or menu,
 so the system handles both its material and foreground legibility. Preserve the existing
 20-point panel and 14-point menu shapes. Let the native material respond to the system's
 Liquid Glass look, Reduce Transparency, and Increase Contrast preferences; do not map
 Clear and Tinted to hard-coded opacity values or read private system preference keys.
-Do not add the Classic white wash, decorative border, or custom menu shadow over native
+Do not add a white wash, decorative border, or custom menu shadow over native
 glass. These would obscure its adaptive material and duplicate its edge treatment.
 History rows, cards, and ordinary content buttons retain their subtle content and interaction fills.
 Floating menus draw above `PasketSurface` with their own material and option labels.
@@ -271,7 +262,6 @@ hit height with transparent resting backgrounds. Paste has a semibold primary la
 secondary labels for the surrounding actions. Hover and press add a soft neutral fill.
 Options and Actions use an accent fill while their menus are open. Disabled buttons dim
 their labels and shortcuts. Anchor menus above the action group with the standard trigger gap.
-Classic presents the controls directly in the footer with standard keycaps.
 
 The left status displays history notifications in place. A single-line notice fits a status
 icon and a 12-point medium title. When a notice includes supporting text, the left surface
@@ -281,7 +271,6 @@ The title row follows the width of the notice and keeps its close control at the
 Liquid Glass uses the secondary grouped button style for the close control.
 Changes in width and height take 0.26 seconds
 and become immediate under Reduce Motion. Liquid Glass resizes its native surface.
-Classic uses a subtle neutral fill for the notification.
 
 Brief successes display a green checkmark for one second. Text copy, pinning, unpinning,
 and deletion use a single-line result. **No Text Found** also uses one line and stays
@@ -296,17 +285,10 @@ a small spinner and a 12-point secondary label. It uses the collection control's
 and horizontal inset so the footer stays aligned. Reduce Motion uses a static hourglass.
 Background image indexing runs silently.
 
-Classic retains the existing behind-window HUD material, white wash, and panel outline.
-Its custom menus use `.regularMaterial` without an additional solid color fill or tint,
-with the existing outline and shadow. Both appearances preserve view identity when
-switching, so changing the material does not rebuild content, reset scroll positions,
-or discard input focus. Reserve accent fills for option selection and interaction feedback.
-Settings and equivalent setup cards use `SettingsCard`. In Liquid Glass, use a
-primary-color fill at 0.08 opacity to separate grouped content from the glass panel.
-Classic keeps the 0.035 primary fill. Both appearances use the same card shape and
-geometry, with fill alone defining the group boundary. The shortcut-recording target
-shares this fill through `SettingsCard` and retains its existing dashed outline as
-a distinct recording affordance.
+Reserve accent fills for option selection and interaction feedback.
+Settings and equivalent setup cards use `SettingsCard` with a primary-color fill at 0.08
+opacity to separate grouped content from the glass panel. The shortcut-recording target
+shares this fill and retains its existing dashed outline as a distinct recording affordance.
 Reuse the existing state treatments in `PasketButtonStyle` rather than choosing new
 opacity values for each button. Decorative outlines must not intercept input.
 

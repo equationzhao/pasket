@@ -15,19 +15,16 @@ struct AccentColorPreferencesTests {
         #expect(AccentColorPreferences(defaults: defaults).color == .system)
     }
 
-    @Test func selectionsSurviveRelaunchIndependentlyOfDockIcon() throws {
+    @Test func selectionsSurviveRelaunch() throws {
         let suite = "PasketAccentColorTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let preferences = AccentColorPreferences(defaults: defaults)
-        let dockIcon = DockIconPreferences(defaults: defaults)
-        dockIcon.select(.mint)
         for color in AccentColorOption.allCases.reversed() {
             preferences.select(color)
             #expect(preferences.color == color)
             #expect(AccentColorPreferences(defaults: defaults).color == color)
-            #expect(DockIconPreferences(defaults: defaults).color == .mint)
         }
         #expect(preferences.color == .system)
     }

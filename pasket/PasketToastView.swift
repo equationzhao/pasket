@@ -4,7 +4,6 @@ struct PasketFooterStatus<Status: View>: View {
     var center: PasketToastCenter
     var onAction: (PasketToast.Action) -> Void
     @ViewBuilder var status: () -> Status
-    @Environment(\.pasketAppearance) private var appearance
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var size: CGSize?
     @State private var isHovered = false
@@ -14,15 +13,14 @@ struct PasketFooterStatus<Status: View>: View {
         let toast = center.current
         let detail = toast?.isBriefSuccess == false ? toast?.message : nil
         let hasDetail = detail != nil
-        let usesGlass = appearance == .liquidGlass
-        let rowHeight: CGFloat = usesGlass ? 26 : 28
-        let inset: CGFloat = usesGlass ? 4 : 0
+        let rowHeight: CGFloat = 26
+        let inset: CGFloat = 4
         let radius = hasDetail ? PasketShape.controlRadius + PasketShape.menuInset : rowHeight / 2 + inset
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
 
         Group {
             if let toast {
-                notification(toast, detail: detail, rowHeight: rowHeight, usesGlass: usesGlass)
+                notification(toast, detail: detail, rowHeight: rowHeight)
                     .accessibilityElement(children: toast.isBriefSuccess ? .combine : .contain)
                     .accessibilityFocused($isAccessibilityFocused)
                     .accessibilityIdentifier(toast.isBriefSuccess ? "clipboardFooterSuccess" : "clipboardToast")
@@ -39,12 +37,7 @@ struct PasketFooterStatus<Status: View>: View {
         }
         .frame(width: size?.width, height: size?.height, alignment: .topLeading)
         .clipShape(shape)
-        .background {
-            if toast != nil && !usesGlass {
-                shape.fill(.primary.opacity(0.06))
-            }
-        }
-        .glassEffect(usesGlass ? .regular : .identity, in: shape)
+        .glassEffect(.regular, in: shape)
         .animation(reduceMotion ? nil : .smooth(duration: 0.26), value: hasDetail)
         .onHover { isHovered = $0 }
         .modifier(PasketToastLifetime(toast: toast,
@@ -52,7 +45,7 @@ struct PasketFooterStatus<Status: View>: View {
                                       onDismiss: center.dismiss(id:)))
     }
 
-    private func notification(_ toast: PasketToast, detail: String?, rowHeight: CGFloat, usesGlass: Bool) -> some View {
+    private func notification(_ toast: PasketToast, detail: String?, rowHeight: CGFloat) -> some View {
         let showsClose = toast.style != .success
         let trailingInset: CGFloat = showsClose ? 4 : 9
         return VStack(alignment: .leading, spacing: 0) {
@@ -65,7 +58,7 @@ struct PasketFooterStatus<Status: View>: View {
                     .lineLimit(1)
                     .fixedSize()
                 if detail == nil, let action = toast.action {
-                    makeFinderButton(for: action, usesGlass: usesGlass)
+                    makeFinderButton(for: action)
                 }
             }
             .font(.system(size: 12, weight: .medium))
@@ -82,7 +75,7 @@ struct PasketFooterStatus<Status: View>: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("clipboardFeedbackDetail")
                         if let action = toast.action {
-                            makeFinderButton(for: action, usesGlass: usesGlass)
+                            makeFinderButton(for: action)
                         }
                     }
                     .padding(.leading, 29)
@@ -93,7 +86,7 @@ struct PasketFooterStatus<Status: View>: View {
         }
         .overlay(alignment: .topTrailing) {
             if showsClose {
-                PasketCloseButton(title: "Dismiss notification", help: "Dismiss notification", isInGlassGroup: usesGlass) {
+                PasketCloseButton(title: "Dismiss notification", help: "Dismiss notification", isInGlassGroup: true) {
                     center.dismiss(id: toast.id)
                 }
                 .controlSize(.small)
@@ -104,9 +97,9 @@ struct PasketFooterStatus<Status: View>: View {
         }
     }
 
-    private func makeFinderButton(for action: PasketToast.Action, usesGlass: Bool) -> some View {
+    private func makeFinderButton(for action: PasketToast.Action) -> some View {
         Button("Show in Finder") { onAction(action) }
-            .buttonStyle(PasketButtonStyle(isProminent: true, isInGlassGroup: usesGlass))
+            .buttonStyle(PasketButtonStyle(isProminent: true, isInGlassGroup: true))
             .controlSize(.small)
             .fixedSize()
             .accessibilityIdentifier("showExportInFinder")

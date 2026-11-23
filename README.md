@@ -65,11 +65,10 @@ Copying something new cancels the queue.
 
 ### Choose your appearance
 
-**Liquid Glass**, the default, uses native macOS glass and follows the system's
-appearance and transparency preferences. Choose **Classic** in Settings for
-frosted surfaces. Both follow your system's light or dark appearance.
+**Liquid Glass** uses native macOS glass and follows the system's light or dark
+appearance and transparency preferences.
 
-Choose the system accent color or your own, and pick from six Dock icon colors.
+Choose the system accent color or your own.
 Appearance changes apply immediately and stay saved across launches.
 
 ### See your daily usage
@@ -102,7 +101,7 @@ backups. Removing an entry from Pasket never deletes the original file.
 
 ### Fit Pasket into your workflow
 
-- **Menu bar access**, with an optional Dock icon and **Start at Login**.
+- **Menu bar access** and **Start at Login**.
 - **Custom shortcuts** for history, Settings, deleting selections, and Paste Next.
 - **Remembered type filters** for a duration you choose.
 - **History cleanup**, including an optional setting to recycle unavailable file references.

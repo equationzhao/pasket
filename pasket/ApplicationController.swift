@@ -75,9 +75,7 @@ final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServiceP
     let store: ClipboardStore
     let shortcuts = GlobalShortcutManager()
     let pasteController: ClipboardPasteController
-    let dockIcon = DockIconPreferences()
     let accentColor = AccentColorPreferences()
-    let appearance = AppearancePreferences()
     let loginItem = LoginItemPreferences()
     let setup = AppSetup()
     let historyStatistics = HistoryStatistics()
@@ -107,7 +105,6 @@ final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServiceP
             self, selector: #selector(activeSpaceDidChange(_:)),
             name: NSWorkspace.activeSpaceDidChangeNotification, object: nil
         )
-        dockIcon.onChange = { [weak self] in self?.applyDockPreferences() }
         store.pasteQueue.onActiveChange = { [weak self] active in
             guard let self else { return }
             if !shortcuts.setPasteQueueActive(active) {
@@ -119,7 +116,6 @@ final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServiceP
     }
 
     func start(showHistoryOnLaunch: Bool = true) {
-        applyDockPreferences()
         shortcuts.onInvoke = { [weak self] in self?.togglePanel() }
         shortcuts.onPasteNext = { [weak self] in self?.pasteNextQueuedItem() }
         shortcuts.start()
@@ -217,8 +213,7 @@ final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServiceP
                 onRelaunch: { [weak self] in self?.requestRelaunch() },
                 onShare: { [weak self] items, point in self?.showSharePicker(items, at: point) },
                 onSaveAsFile: { [weak self] id in await self?.saveHistoryEntryAsFile(id) }
-            ).modifier(PasketAccentColor(preferences: accentColor))
-                .modifier(PasketAppearance(preferences: appearance)))
+            ).modifier(PasketAccentColor(preferences: accentColor)))
             self.panel = panel
         }
         store.prepareForPresentation()
@@ -448,13 +443,10 @@ final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServiceP
             window.contentView = NSHostingView(rootView: ShortcutSettingsView(
                 shortcuts: shortcuts,
                 store: store,
-                dockIcon: dockIcon,
                 accentColor: accentColor,
-                appearance: appearance,
                 loginItem: loginItem,
                 onClose: { [weak self] in self?.settingsWindow?.close() }
-            ).modifier(PasketAccentColor(preferences: accentColor))
-                .modifier(PasketAppearance(preferences: appearance)))
+            ).modifier(PasketAccentColor(preferences: accentColor)))
             settingsWindow = window
         }
         if let window = settingsWindow, let visibleFrame = screen?.visibleFrame {
@@ -495,8 +487,7 @@ final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServiceP
                 statistics: historyStatistics,
                 copyStatistics: store.copyStatistics,
                 onClose: { [weak self] in self?.statisticsWindow?.close() }
-            ).modifier(PasketAccentColor(preferences: accentColor))
-                .modifier(PasketAppearance(preferences: appearance)))
+            ).modifier(PasketAccentColor(preferences: accentColor)))
             if let visibleFrame = screen?.visibleFrame {
                 window.setFrameOrigin(NSPoint(
                     x: visibleFrame.midX - window.frame.width / 2,
@@ -550,8 +541,7 @@ final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServiceP
                         window.setFrame(frame, display: true)
                     }
                 }
-            ).modifier(PasketAccentColor(preferences: accentColor))
-                .modifier(PasketAppearance(preferences: appearance)))
+            ).modifier(PasketAccentColor(preferences: accentColor)))
             window.center()
             setupWindow = window
         }
@@ -584,24 +574,6 @@ final class ApplicationController: NSObject, NSWindowDelegate, NSSharingServiceP
             startupTask = Task { await store.start() }
         }
         if showHistory { showPanel() }
-    }
-
-    private func applyDockPreferences() {
-        let application = NSApplication.shared
-        let policy: NSApplication.ActivationPolicy = dockIcon.showInDock ? .regular : .accessory
-        if application.activationPolicy() != policy {
-            let visibleSettingsWindow = settingsWindow.flatMap { $0.isVisible ? $0 : nil }
-            let visibleStatisticsWindow = statisticsWindow.flatMap { $0.isVisible ? $0 : nil }
-            application.setActivationPolicy(policy)
-            if let window = visibleStatisticsWindow { bringWindowToFront(window) }
-            if visibleSettingsWindow != nil {
-                // AppKit may hide the app while its Dock presence changes.
-                // Restore the existing window after the activation transition finishes.
-                bringSettingsToFront()
-            }
-        }
-        guard let image = NSImage(named: NSImage.Name(dockIcon.color.assetName)) else { return }
-        application.applicationIconImage = image
     }
 
     func finishPendingWork() async {
