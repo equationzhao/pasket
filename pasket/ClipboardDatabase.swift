@@ -30,6 +30,11 @@ nonisolated final class ClipboardDatabase {
         let retained = Unmanaged.passRetained(SearchContext(search)).toOpaque()
         // SQLite owns this query's matcher until the connection closes (also on registration failure).
         guard sqlite3_create_function_v2(handle, "pasket_search_rank", 5, SQLITE_UTF8, retained, { context, _, values in
+            // A miss can scan the entire history before sqlite3_step returns a row.
+            if Task.isCancelled {
+                sqlite3_result_error_code(context, SQLITE_INTERRUPT)
+                return
+            }
             guard let values else { sqlite3_result_int(context, 0); return }
             guard let data = sqlite3_user_data(context) else { sqlite3_result_int(context, 0); return }
             let search = Unmanaged<SearchContext>.fromOpaque(data).takeUnretainedValue().search
@@ -80,6 +85,7 @@ nonisolated final class ClipboardDatabase {
             switch sqlite3_step(statement) {
             case SQLITE_ROW: try row(statement)
             case SQLITE_DONE: return
+            case SQLITE_INTERRUPT where Task.isCancelled: throw CancellationError()
             default: throw failure()
             }
         }
