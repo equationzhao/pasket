@@ -226,6 +226,8 @@ struct ContentView: View {
                     menuBackdrop
                     ClipboardActionsMenu(
                         pasteTitle: pasteActionTitle, canPaste: canPasteSelection,
+                        showsCopyImageText: store.selectedIDs.count == 1 && store.selectedItem?.image?.isGIF == false,
+                        canCopyImageText: store.canCopySelectedImageText,
                         selectedCount: store.selectedIDs.count,
                         canDeleteSelected: store.selectedID != nil && !store.isDebugMode && !store.isLoading
                             && !store.isStorageBlocked && !store.isCopying && !store.pasteQueue.isPasting,
@@ -926,6 +928,7 @@ struct ContentView: View {
         dismissMenus()
         switch action {
         case .paste: copySelection()
+        case .copyImageText: Task { await store.copySelectedImageText() }
         case .deleteSelected: requestDeletion(store.selectedIDs)
         case .deleteUnavailableFiles: Task { await store.deleteUnavailableFiles() }
         case .clearHistory:
@@ -1293,11 +1296,12 @@ private struct ClipboardPasteActionsMenu: View {
 
 private struct ClipboardActionsMenu: View {
     enum Action: Hashable {
-        case paste, deleteSelected, deleteUnavailableFiles, clearHistory, settings
+        case paste, copyImageText, deleteSelected, deleteUnavailableFiles, clearHistory, settings
 
         var symbol: String {
             switch self {
             case .paste: "clipboard"
+            case .copyImageText: "text.viewfinder"
             case .deleteSelected, .deleteUnavailableFiles, .clearHistory: "trash"
             case .settings: "gearshape"
             }
@@ -1313,6 +1317,7 @@ private struct ClipboardActionsMenu: View {
         var accessibilityIdentifier: String {
             switch self {
             case .paste: "pasteFromActions"
+            case .copyImageText: "copyTextFromImage"
             case .deleteSelected: "deleteSelectedClipboardItem"
             case .deleteUnavailableFiles: "deleteUnavailableClipboardFiles"
             case .clearHistory: "clearClipboardHistory"
@@ -1329,6 +1334,8 @@ private struct ClipboardActionsMenu: View {
 
     let pasteTitle: String
     let canPaste: Bool
+    let showsCopyImageText: Bool
+    let canCopyImageText: Bool
     let selectedCount: Int
     let canDeleteSelected: Bool
     let canClearHistory: Bool
@@ -1341,7 +1348,7 @@ private struct ClipboardActionsMenu: View {
     @FocusState private var isFocused: Bool
 
     private var groups: [ActionGroup] {
-        [ActionGroup(title: "Paste & Copy", actions: [.paste]),
+        [ActionGroup(title: "Paste & Copy", actions: showsCopyImageText ? [.paste, .copyImageText] : [.paste]),
          ActionGroup(title: "History", actions: [.deleteSelected, .deleteUnavailableFiles, .clearHistory]),
          ActionGroup(title: "Settings", actions: [.settings])]
     }
@@ -1414,6 +1421,7 @@ private struct ClipboardActionsMenu: View {
     private func isEnabled(_ action: Action) -> Bool {
         switch action {
         case .paste: canPaste
+        case .copyImageText: canCopyImageText
         case .deleteSelected: canDeleteSelected
         case .deleteUnavailableFiles, .clearHistory: canClearHistory
         case .settings: true
@@ -1423,6 +1431,7 @@ private struct ClipboardActionsMenu: View {
     private func title(for action: Action) -> String {
         switch action {
         case .paste: pasteTitle
+        case .copyImageText: "Copy Text from Image"
         case .deleteSelected: selectedCount > 1 ? "Delete \(selectedCount) Selected Items…" : "Delete Selected"
         case .deleteUnavailableFiles: "Delete Unavailable Files"
         case .clearHistory: "Delete All Entries…"

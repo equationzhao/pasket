@@ -7,6 +7,38 @@ import UniformTypeIdentifiers
 
 @Suite(.serialized) @MainActor
 struct ClipboardTests {
+    @Test func copiesTextFromSelectedImage() async throws {
+        let fixture = try Fixture()
+        let persistence = ClipboardPersistence(directory: fixture.directory)
+        let data = try Self.screenshotPNG(text: "PAYMENT REFERENCE 4512")
+        let item = try await persistence.importImage(data, source: .unknown, at: Date())
+        try await persistence.save(ClipboardHistory(items: [item]))
+        fixture.write("Original clipboard text")
+        await fixture.start()
+        fixture.store.prepareForPresentation()
+        fixture.store.select(item.id)
+        await fixture.store.copySelectedImageText()
+        #expect(fixture.pasteboard.string(forType: .string) == "PAYMENT REFERENCE 4512")
+        fixture.store.pollClipboard()
+        await fixture.store.flush()
+        #expect(fixture.store.totalCount == 1)
+        await fixture.cleanUp()
+    }
+
+    private static func screenshotPNG(text: String) throws -> Data {
+        let image = NSImage(size: NSSize(width: 850, height: 210), flipped: false) { rect in
+            NSColor.white.setFill()
+            rect.fill()
+            (text as NSString).draw(at: NSPoint(x: 44, y: 75), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 44, weight: .semibold), .foregroundColor: NSColor.black
+            ])
+            return true
+        }
+        let tiff = try #require(image.tiffRepresentation)
+        let bitmap = try #require(NSBitmapImageRep(data: tiff))
+        return try #require(bitmap.representation(using: .png, properties: [:]))
+    }
+
     @Test func scrollbarJumpLoadsTheDestinationWithoutReadingInterveningPages() async throws {
         let fixture = try Fixture()
         let now = Date()

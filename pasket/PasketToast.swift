@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 struct PasketToast: Identifiable, Equatable {
-    enum Source { case notice, copy, paste, storage, retention, pasteOrderHint }
+    enum Source { case notice, copy, paste, storage, retention, pasteOrderHint, imageText }
     enum Style { case success, information, warning, error }
     enum Action {
         case retryStorage, reviewHistory

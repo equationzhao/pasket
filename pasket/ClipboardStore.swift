@@ -35,6 +35,7 @@ final class ClipboardStore {
     private(set) var isLoading = true
     private(set) var isPaused = false
     private(set) var isCopying = false
+    private(set) var isCopyingImageText = false
     private(set) var copiedChangeCount: Int?
     private(set) var isDeletingUnavailableFiles = false
     private(set) var clipboardAccessDenied = false {
@@ -185,6 +186,12 @@ final class ClipboardStore {
         !isDebugMode && !selectedIDs.isEmpty && selectedItems.count == selectedIDs.count
             && selectedIDs.isDisjoint(with: unavailableItems) && !isLoading && !isCopying
     }
+    var canCopySelectedImageText: Bool {
+        guard !isDebugMode, !isLoading, !storageBlocked, !isCopyingImageText,
+              selectedIDs.count == 1, let item = selectedItem, let image = item.image else { return false }
+        return !image.isGIF && !unavailableItems.contains(item.id)
+    }
+
     var canCombineSelection: Bool { selectedItems.count == selectedIDs.count && ClipboardBatch.canCombine(selectedItems) }
     var hasMoreItems: Bool { !isDebugMode && items.count < matchingCount }
 
@@ -260,6 +267,43 @@ final class ClipboardStore {
         setNotice(nil)
         persist([.settings(isPaused: isPaused)])
         if !paused { requestClipboardAccessIfNeeded() }
+    }
+
+    func copySelectedImageText() async {
+        guard canCopySelectedImageText, let item = selectedItem, let image = item.image else { return }
+        let clipboardSnapshot = pasteboard.changeCount
+        let presentation = presentationID
+        isCopyingImageText = true
+        toasts.dismiss(source: .imageText)
+        defer { isCopyingImageText = false }
+        do {
+            let data = try await persistence.imageData(image)
+            let text = try await ClipboardImageText.recognizeText(in: data)
+            guard !Task.isCancelled, presentationID == presentation else { return }
+            if text.isEmpty {
+                toasts.show("There is no recognizable text in this image.", source: .imageText,
+                            title: "No Text Found", style: .information)
+                return
+            }
+            guard pasteboard.changeCount == clipboardSnapshot else {
+                toasts.show("Run Copy Text from Image again.", source: .imageText,
+                            title: "Clipboard Changed", style: .information)
+                return
+            }
+            let item = NSPasteboardItem()
+            guard item.setString(text, forType: .string) else { throw CocoaError(.fileWriteUnknown) }
+            pasteboard.clearContents()
+            let copied = pasteboard.writeObjects([item])
+            monitor.checkpoint()
+            guard copied else { throw CocoaError(.fileWriteUnknown) }
+            pasteQueue.cancel()
+            copyStatistics.recordEvent(at: Date())
+            toasts.show("Text is ready to paste.", source: .imageText, title: "Copied Text", style: .success)
+        } catch {
+            guard !Task.isCancelled, presentationID == presentation else { return }
+            toasts.show(error.localizedDescription, source: .imageText,
+                        title: "Could Not Copy Image Text", style: .error)
+        }
     }
 
     func requestClipboardAccessIfNeeded() {
