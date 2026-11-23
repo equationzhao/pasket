@@ -334,6 +334,14 @@ struct ShortcutSettingsView: View {
                 )
                 Divider().opacity(0.35).padding(.leading, 40)
                 shortcutRow(
+                    title: "Open Actions",
+                    description: "History panel only",
+                    icon: Image(systemName: "ellipsis.circle"),
+                    shortcut: shortcuts.actionsShortcut,
+                    action: .openActions
+                )
+                Divider().opacity(0.35).padding(.leading, 40)
+                shortcutRow(
                     title: "Delete Selected Item",
                     description: "History panel only · Optional",
                     icon: Image(systemName: "trash"),
@@ -389,18 +397,19 @@ struct ShortcutSettingsView: View {
             .help("Record a shortcut for \(title)")
             .accessibilityLabel("Record \(title) shortcut")
             .accessibilityValue(shortcut?.displayName ?? "Not set")
-            if action == .openSettings {
+            if action == .openSettings || action == .openActions {
+                let defaultShortcut: GlobalShortcut = action == .openSettings ? .defaultSettings : .defaultActions
                 Button {
-                    shortcuts.beginRecording(.openSettings)
-                    shortcuts.stageShortcut(.defaultSettings)
+                    shortcuts.beginRecording(action)
+                    shortcuts.stageShortcut(defaultShortcut)
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 12, weight: .medium))
                         .frame(width: 14, height: 16)
                 }
                 .buttonStyle(PasketButtonStyle())
-                .disabled(shortcut == .defaultSettings)
-                .help("Restore Default (⌘,)")
+                .disabled(shortcut == defaultShortcut)
+                .help("Restore Default (\(defaultShortcut.displayName))")
                 .accessibilityLabel("Restore \(title) shortcut to default")
             } else {
                 Color.clear
@@ -719,6 +728,7 @@ struct ShortcutRecordingView: View {
         switch shortcuts.recordingAction {
         case .showHistory: shortcuts.shortcut != nil
         case .openSettings: shortcuts.settingsShortcut != nil
+        case .openActions: shortcuts.actionsShortcut != nil
         case .deleteSelectedItem: shortcuts.deletionShortcut != nil
         case .pasteNext: shortcuts.pasteNextShortcut != nil
         }
@@ -1285,7 +1295,7 @@ private struct SettingsCard: ViewModifier {
     }
 }
 
-private struct ShortcutKeycaps: View {
+struct ShortcutKeycaps: View {
     let shortcut: GlobalShortcut
 
     private var keys: [String] {
@@ -1304,7 +1314,7 @@ private struct ShortcutKeycaps: View {
     }
 }
 
-private struct ShortcutKeycap: View {
+struct ShortcutKeycap: View {
     let key: String
 
     var body: some View {

@@ -13,6 +13,7 @@ nonisolated struct GlobalShortcut: Codable, Equatable, Sendable {
         keyLabel: ","
     )
 
+    static let defaultActions = GlobalShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey), keyLabel: "K")
     static let defaultPaste = GlobalShortcut(keyCode: UInt32(kVK_ANSI_V), modifiers: UInt32(cmdKey), keyLabel: "V")
 
     var eventFlags: CGEventFlags {
@@ -80,6 +81,7 @@ final class GlobalShortcutManager {
     enum RecordingAction {
         case showHistory
         case openSettings
+        case openActions
         case deleteSelectedItem
         case pasteNext
 
@@ -87,6 +89,7 @@ final class GlobalShortcutManager {
             switch self {
             case .showHistory: "Show Clipboard History"
             case .openSettings: "Open Settings"
+            case .openActions: "Open Actions"
             case .deleteSelectedItem: "Delete Selected Item"
             case .pasteNext: "Paste Next"
             }
@@ -96,6 +99,7 @@ final class GlobalShortcutManager {
     private(set) var shortcut: GlobalShortcut?
     private(set) var deletionShortcut: GlobalShortcut?
     private(set) var settingsShortcut: GlobalShortcut?
+    private(set) var actionsShortcut: GlobalShortcut?
     private(set) var pasteNextShortcut: GlobalShortcut?
     private(set) var errorMessage: String?
     private(set) var isRecording = false
@@ -123,6 +127,7 @@ final class GlobalShortcutManager {
     private static let storageKey = "globalInvocationShortcut"
     private static let deletionStorageKey = "deleteSelectedItemShortcut"
     private static let settingsStorageKey = "openSettingsShortcut"
+    private static let actionsStorageKey = "openActionsShortcut"
     private static let pasteNextStorageKey = "pasteNextShortcut"
     private static let signature: OSType = 0x50534B54
 
@@ -161,6 +166,10 @@ final class GlobalShortcutManager {
            settingsShortcut?.hasSameKeys(as: candidate) != true {
             pasteNextShortcut = candidate
         }
+        let savedActions = defaults.object(forKey: Self.actionsStorageKey)
+        let actions = (savedActions as? Data).flatMap { try? JSONDecoder().decode(GlobalShortcut.self, from: $0) }
+            ?? (savedActions == nil ? .defaultActions : nil)
+        if let actions, !hasShortcutConflict(with: actions) { actionsShortcut = actions }
     }
 
     func start() {
@@ -267,6 +276,8 @@ final class GlobalShortcutManager {
             let accepted = recordingAction == .openSettings
                 ? setSettingsShortcut(pendingShortcut) : setDeletionShortcut(pendingShortcut)
             guard accepted else { return false }
+        case .openActions:
+            guard setActionsShortcut(pendingShortcut) else { return false }
         case .showHistory:
             guard let candidate = pendingShortcut else {
                 unregisterHotKey()
@@ -287,7 +298,7 @@ final class GlobalShortcutManager {
                 errorMessage = "This combination is assigned to Paste Next. Choose another combination."
                 return false
             }
-            guard register(candidate, persist: true) else { return false }
+            guard allowUnlessAssignedToActions(candidate), register(candidate, persist: true) else { return false }
         }
         finishRecording()
         return true
@@ -317,6 +328,7 @@ final class GlobalShortcutManager {
 
     @discardableResult
     func setDeletionShortcut(_ candidate: GlobalShortcut?) -> Bool {
+        guard allowUnlessAssignedToActions(candidate) else { return false }
         if let candidate, pasteNextShortcut?.hasSameKeys(as: candidate) == true {
             errorMessage = "This combination is assigned to Paste Next. Choose another combination."
             return false
@@ -341,6 +353,7 @@ final class GlobalShortcutManager {
 
     @discardableResult
     func setSettingsShortcut(_ candidate: GlobalShortcut?) -> Bool {
+        guard allowUnlessAssignedToActions(candidate) else { return false }
         if let candidate, pasteNextShortcut?.hasSameKeys(as: candidate) == true {
             errorMessage = "This combination is assigned to Paste Next. Choose another combination."
             return false
@@ -365,8 +378,36 @@ final class GlobalShortcutManager {
         return true
     }
 
+    private func hasShortcutConflict(with candidate: GlobalShortcut) -> Bool {
+        [shortcut, deletionShortcut, settingsShortcut, pasteNextShortcut].contains { $0?.hasSameKeys(as: candidate) == true }
+    }
+
+    private func allowUnlessAssignedToActions(_ candidate: GlobalShortcut?) -> Bool {
+        if let candidate, actionsShortcut?.hasSameKeys(as: candidate) == true {
+            errorMessage = "This combination is assigned to Open Actions. Choose another combination."
+            return false
+        }
+        return true
+    }
+
+    private func setActionsShortcut(_ candidate: GlobalShortcut?) -> Bool {
+        if let candidate, hasShortcutConflict(with: candidate) {
+            errorMessage = "This combination is assigned to another Pasket action. Choose another combination."
+            return false
+        }
+        actionsShortcut = candidate
+        errorMessage = nil
+        if let candidate, let data = try? JSONEncoder().encode(candidate) {
+            defaults.set(data, forKey: Self.actionsStorageKey)
+        } else {
+            defaults.set(false, forKey: Self.actionsStorageKey)
+        }
+        return true
+    }
+
     @discardableResult
     func setPasteNextShortcut(_ candidate: GlobalShortcut?) -> Bool {
+        guard allowUnlessAssignedToActions(candidate) else { return false }
         if let candidate {
             guard shortcut?.hasSameKeys(as: candidate) != true,
                   settingsShortcut?.hasSameKeys(as: candidate) != true,

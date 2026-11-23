@@ -300,8 +300,10 @@ Disabled rows use 0.35 opacity and do not show hover or press feedback. Mouse ex
 the highlighted row in these menus; arrow keys can establish a highlight again.
 The paste menu retains the last active row for Return and continued arrow navigation after
 mouse exit, so clearing a hover cannot unexpectedly switch the action to Paste Together.
-The filter and more-action menus retain their existing selection/default fallbacks. Keep number shortcuts
-and Escape dismissal intact. Menu separators use the same 8-point horizontal inset.
+The history Actions menu opens above the footer's Actions button. It uses the shared menu surface
+and row style, with section headings aligned to the 8-point separator and row inset. Keyboard
+navigation skips disabled actions. Return activates the highlighted action and Escape returns focus
+to search. Keep number shortcuts in the paste options menu.
 
 Prominent buttons use accent text, a 0.08 accent fill, and a 0.12 accent outline at rest.
 Hover increases the fill to 0.12 and the outline to 0.2; pressing increases the fill to 0.2.

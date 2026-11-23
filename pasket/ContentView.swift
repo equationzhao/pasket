@@ -25,8 +25,8 @@ struct ContentView: View {
     @FocusState private var searchFocused: Bool
     @State private var isFilterMenuPresented = false
     @State private var filterControlFrame: CGRect = .zero
-    @State private var isMoreMenuPresented = false
-    @State private var moreControlFrame: CGRect = .zero
+    @State private var isActionsMenuPresented = false
+    @State private var actionsControlFrame: CGRect = .zero
     @State private var isConfirmingClear = false
     @State private var showsSearchProgress = false
     @State private var pendingDeletion: Set<UUID> = []
@@ -43,7 +43,7 @@ struct ContentView: View {
     @State private var pendingQueuePresentationID: UUID?
     @State private var startsQueueAfterSetup = false
 
-    private var isMenuPresented: Bool { isFilterMenuPresented || isMoreMenuPresented || isPasteMenuPresented }
+    private var isMenuPresented: Bool { isFilterMenuPresented || isActionsMenuPresented || isPasteMenuPresented }
     private var orderedSelectedItems: [ClipboardItem] {
         reversePasteOrder ? Array(store.selectedItems.reversed()) : store.selectedItems
     }
@@ -54,6 +54,12 @@ struct ContentView: View {
     private var canClearHistory: Bool {
         !store.isDebugMode && store.totalCount > 0 && !store.isLoading && !store.isStorageBlocked
             && !store.isDeletingUnavailableFiles
+    }
+
+    private var canPasteSelection: Bool { store.canCopySelection && !store.pasteQueue.isPasting && !store.isSearching }
+    private var pasteActionTitle: String {
+        if store.selectedIDs.count <= 1 { return "Paste" }
+        return store.canCombineSelection ? "Paste Together" : "Start Paste Queue"
     }
 
     var body: some View {
@@ -103,6 +109,12 @@ struct ContentView: View {
         }
     }
 
+    private var menuBackdrop: some View {
+        Color.clear.contentShape(Rectangle())
+            .onTapGesture(perform: dismissMenus)
+            .accessibilityHidden(true)
+    }
+
     private var historyLayout: some View {
         VStack(spacing: 0) {
             searchBar
@@ -138,6 +150,10 @@ struct ContentView: View {
                 }
             }) { event in
                 guard !isDialogPresented, !shortcuts.isRecording else { return false }
+                if shortcuts.actionsShortcut?.matches(event) == true {
+                    if !event.isARepeat { toggleActionsMenu() }
+                    return true
+                }
                 if !isMenuPresented, searchFocused,
                    event.modifierFlags.intersection([.command, .control, .option, .shift]) == .shift,
                    event.keyCode == UInt16(kVK_Tab), store.canSelectRecentCopies() {
@@ -200,33 +216,31 @@ struct ContentView: View {
                 }
             }
         }
-        .overlay(alignment: .bottomTrailing) {
-            if isMoreMenuPresented {
-                GeometryReader { geometry in
-                    ZStack(alignment: .bottomTrailing) {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture(perform: dismissMenus)
-                            .accessibilityHidden(true)
-                        ClipboardMoreActionsMenu(canClearHistory: canClearHistory, onSelect: { action in
-                            dismissMenus()
-                            switch action {
-                            case .settings:
-                                searchFocused = false
-                                onOpenSettings()
-                            case .clearHistory:
-                                searchFocused = false
-                                isConfirmingClear = true
-                            case .deleteUnavailableFiles:
-                                Task { await store.deleteUnavailableFiles() }
-                            }
-                        }, onDismiss: dismissMenus)
-                        .padding(.bottom, geometry.size.height - moreControlFrame.minY + 4)
-                        .padding(.trailing, geometry.size.width - moreControlFrame.maxX)
-                    }
+        .overlay(alignment: .bottomTrailing) { actionsMenuOverlay }
+    }
+
+    private var actionsMenuOverlay: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .bottomTrailing) {
+                if isActionsMenuPresented {
+                    menuBackdrop
+                    ClipboardActionsMenu(
+                        pasteTitle: pasteActionTitle, canPaste: canPasteSelection,
+                        selectedCount: store.selectedIDs.count,
+                        canDeleteSelected: store.selectedID != nil && !store.isDebugMode && !store.isLoading
+                            && !store.isStorageBlocked && !store.isCopying && !store.pasteQueue.isPasting,
+                        canClearHistory: canClearHistory, deletionShortcut: shortcuts.deletionShortcut?.displayName,
+                        settingsShortcut: shortcuts.settingsShortcut?.displayName,
+                        onSelect: performAction, onDismiss: dismissMenus
+                    )
+                    .padding(.bottom, geometry.size.height - actionsControlFrame.minY + PasketPickerLayout.triggerGap)
+                    .padding(.trailing, geometry.size.width - actionsControlFrame.maxX)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         }
+        .allowsHitTesting(isActionsMenuPresented)
+        .accessibilityHidden(!isActionsMenuPresented)
     }
 
     private var historySurface: some View {
@@ -247,7 +261,7 @@ struct ContentView: View {
         .onChange(of: store.presentationID) {
             isOptionHeld = false
             isFilterMenuPresented = false
-            isMoreMenuPresented = false
+            isActionsMenuPresented = false
             isPasteMenuPresented = false
             reversePasteOrder = true
             textSeparator = .newline
@@ -353,7 +367,7 @@ struct ContentView: View {
                 .accessibilityIdentifier("resetClipboardFilter")
             }
             Button {
-                isMoreMenuPresented = false
+                isActionsMenuPresented = false
                 isPasteMenuPresented = false
                 searchFocused = false
                 isFilterMenuPresented.toggle()
@@ -691,22 +705,19 @@ struct ContentView: View {
     }
 
     private var selectRecentControl: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            if store.hasRecentCopies(at: context.date) {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            if store.hasRecentCopies() {
                 Button(action: selectRecentCopies) {
                     HStack(spacing: 8) {
                         Text("Select Recent")
-                        Text("⇧Tab")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                        ShortcutKeycap(key: "⇧⇥").foregroundStyle(.secondary).accessibilityHidden(true)
                     }
-                    .font(.system(size: 12))
-                    .frame(minHeight: 18)
                 }
                 .buttonStyle(PasketButtonStyle())
-                .fixedSize()
+                .controlSize(.small)
                 .focusable(false)
-                .disabled(!store.canSelectRecentCopies(at: context.date))
+                .fixedSize()
+                .disabled(!store.canSelectRecentCopies())
                 .help(store.query.isEmpty && store.filter == .all
                       ? "Select the latest batch of copies (⇧Tab)"
                       : "Clear search and choose All Types to select recent copies")
@@ -745,37 +756,18 @@ struct ContentView: View {
                 Text("\(store.selectedIDs.count) Selected")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            Button(role: .destructive) {
-                requestDeletion(store.selectedIDs)
-                searchFocused = true
-            } label: {
-                if store.selectedIDs.count > 1 {
-                    Image(systemName: "trash").frame(width: 16)
-                } else {
-                    Label("Delete Selected", systemImage: "trash")
-                }
-            }
-            .buttonStyle(PasketButtonStyle())
-            .font(.system(size: 12))
-            .focusable(false)
-            .fixedSize()
-            .disabled(store.isDebugMode || store.selectedItem == nil || store.isLoading || store.isStorageBlocked
-                      || store.isCopying || store.pasteQueue.isPasting)
-            .help(shortcuts.deletionShortcut.map { "Delete selected history entries (\($0.displayName))" }
-                  ?? "Delete selected history entries")
-            .accessibilityIdentifier("deleteSelectedClipboardItem")
-            .accessibilityLabel("Delete \(store.selectedIDs.count) selected items")
             Button(action: copySelection) {
                 HStack(spacing: 8) {
-                    Text(store.selectedIDs.count > 1 ? (store.canCombineSelection ? "Paste Together" : "Start Paste Queue") : "Paste")
-                    Image(systemName: "return").foregroundStyle(.secondary)
+                    Text(pasteActionTitle)
+                    ShortcutKeycap(key: "↵").foregroundStyle(.secondary).accessibilityHidden(true)
                 }
                 .font(.system(size: 12, weight: .medium))
             }
             .buttonStyle(PasketButtonStyle(isProminent: true))
+            .controlSize(.small)
             .focusable(false)
             .fixedSize()
-            .disabled(!store.canCopySelection || store.pasteQueue.isPasting || store.isSearching)
+            .disabled(!canPasteSelection)
             .help("Paste selected content into your previous app")
             .accessibilityIdentifier("copyClipboardItem")
             if store.selectedIDs.count > 1 {
@@ -799,25 +791,27 @@ struct ContentView: View {
                 .accessibilityLabel("Paste actions and options")
                 .accessibilityIdentifier("clipboardPasteActions")
             }
-            Button {
-                isFilterMenuPresented = false
-                isPasteMenuPresented = false
-                isMoreMenuPresented.toggle()
-                searchFocused = !isMoreMenuPresented
-            } label: {
-                Image(systemName: "ellipsis")
-                    .frame(width: 16, height: 16)
+            Button(action: toggleActionsMenu) {
+                HStack(spacing: 8) {
+                    Text("Actions")
+                    if let shortcut = shortcuts.actionsShortcut {
+                        ShortcutKeycaps(shortcut: shortcut).foregroundStyle(.secondary).accessibilityHidden(true)
+                    }
+                }
+                .font(.system(size: 12))
+                .frame(minHeight: 18)
             }
-            .buttonStyle(PasketButtonStyle(isActive: isMoreMenuPresented))
+            .buttonStyle(PasketButtonStyle(isActive: isActionsMenuPresented))
+            .controlSize(.small)
             .focusable(false)
             .fixedSize()
             .onGeometryChange(for: CGRect.self) { geometry in
                 geometry.frame(in: .named("clipboardPanel"))
             } action: { frame in
-                moreControlFrame = frame
+                actionsControlFrame = frame
             }
-            .help("More actions")
-            .accessibilityLabel("More actions")
+            .help(shortcuts.actionsShortcut.map { "Show clipboard actions (\($0.displayName))" } ?? "Show clipboard actions")
+            .accessibilityLabel("Actions")
             .accessibilityIdentifier("clipboardMoreActions")
         }
         .padding(.horizontal, 14)
@@ -921,6 +915,28 @@ struct ContentView: View {
         }
     }
 
+    private func toggleActionsMenu() {
+        let wasPresented = isActionsMenuPresented
+        dismissMenus()
+        isActionsMenuPresented = !wasPresented
+        searchFocused = wasPresented
+    }
+
+    private func performAction(_ action: ClipboardActionsMenu.Action) {
+        dismissMenus()
+        switch action {
+        case .paste: copySelection()
+        case .deleteSelected: requestDeletion(store.selectedIDs)
+        case .deleteUnavailableFiles: Task { await store.deleteUnavailableFiles() }
+        case .clearHistory:
+            searchFocused = false
+            isConfirmingClear = true
+        case .settings:
+            searchFocused = false
+            onOpenSettings()
+        }
+    }
+
     private func dismissFilterMenu() {
         isFilterMenuPresented = false
         searchFocused = true
@@ -928,7 +944,7 @@ struct ContentView: View {
 
     private func dismissMenus() {
         isFilterMenuPresented = false
-        isMoreMenuPresented = false
+        isActionsMenuPresented = false
         isPasteMenuPresented = false
         searchFocused = true
     }
@@ -1275,27 +1291,29 @@ private struct ClipboardPasteActionsMenu: View {
     }
 }
 
-private struct ClipboardMoreActionsMenu: View {
-    enum Action: CaseIterable {
-        case deleteUnavailableFiles, clearHistory, settings
+private struct ClipboardActionsMenu: View {
+    enum Action: Hashable {
+        case paste, deleteSelected, deleteUnavailableFiles, clearHistory, settings
 
-        var title: String {
+        var symbol: String {
             switch self {
-            case .deleteUnavailableFiles: "Delete Unavailable Files"
-            case .clearHistory: "Delete All Entries…"
-            case .settings: "Settings…"
+            case .paste: "clipboard"
+            case .deleteSelected, .deleteUnavailableFiles, .clearHistory: "trash"
+            case .settings: "gearshape"
             }
         }
-        var symbol: String { self == .settings ? "gearshape" : "trash" }
-        var help: String {
+
+        var isDestructive: Bool {
             switch self {
-            case .deleteUnavailableFiles: "Remove history entries with unavailable files. Original files are kept."
-            case .clearHistory: "Clear all clipboard history after confirmation"
-            case .settings: "Open Settings"
+            case .deleteSelected, .deleteUnavailableFiles, .clearHistory: true
+            default: false
             }
         }
+
         var accessibilityIdentifier: String {
             switch self {
+            case .paste: "pasteFromActions"
+            case .deleteSelected: "deleteSelectedClipboardItem"
             case .deleteUnavailableFiles: "deleteUnavailableClipboardFiles"
             case .clearHistory: "clearClipboardHistory"
             case .settings: "openPasketSettings"
@@ -1303,77 +1321,121 @@ private struct ClipboardMoreActionsMenu: View {
         }
     }
 
+    private struct ActionGroup: Identifiable {
+        var title: String
+        var actions: [Action]
+        var id: String { title }
+    }
+
+    let pasteTitle: String
+    let canPaste: Bool
+    let selectedCount: Int
+    let canDeleteSelected: Bool
     let canClearHistory: Bool
+    let deletionShortcut: String?
+    let settingsShortcut: String?
     var onSelect: (Action) -> Void
     var onDismiss: () -> Void
 
-    @State private var highlightedAction: Action? = .settings
+    @State private var highlightedAction: Action?
     @FocusState private var isFocused: Bool
 
-    private var enabledActions: [Action] { canClearHistory ? Action.allCases : [.settings] }
+    private var groups: [ActionGroup] {
+        [ActionGroup(title: "Paste & Copy", actions: [.paste]),
+         ActionGroup(title: "History", actions: [.deleteSelected, .deleteUnavailableFiles, .clearHistory]),
+         ActionGroup(title: "Settings", actions: [.settings])]
+    }
+
+    private var enabledActions: [Action] { groups.flatMap(\.actions).filter(isEnabled) }
+    private var defaultAction: Action { enabledActions.first { !$0.isDestructive } ?? .settings }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(Action.allCases, id: \.self) { action in
-                if action == .settings {
+            ForEach(groups) { group in
+                if group.id != groups.first?.id {
                     Divider().padding(.horizontal, 8).padding(.vertical, 4)
                 }
-                Button(role: action == .settings ? nil : .destructive) {
-                    onSelect(action)
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: action.symbol)
-                            .font(.system(size: 13, weight: .regular))
-                            .frame(width: 16)
-                        Text(action.title)
-                            .font(.system(size: 13, weight: .medium))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                Text(group.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(group.actions, id: \.self) { action in
+                    Button(role: action.isDestructive ? .destructive : nil) {
+                        onSelect(action)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: action.symbol).frame(width: 16)
+                            Text(title(for: action)).lineLimit(1)
+                            Spacer(minLength: 0)
+                            if let shortcut = shortcut(for: action) {
+                                Text(shortcut).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                            }
+                        }
                     }
-                }
-                .buttonStyle(PasketMenuItemStyle(isHighlighted: highlightedAction == action))
-                .focusable(false)
-                .disabled(!enabledActions.contains(action))
-                .onHover { hovering in
-                    if hovering, enabledActions.contains(action) {
-                        highlightedAction = action
-                    } else if highlightedAction == action {
-                        highlightedAction = nil
+                    .buttonStyle(PasketMenuItemStyle(isHighlighted: highlightedAction == action))
+                    .focusable(false)
+                    .disabled(!isEnabled(action))
+                    .onHover { hovering in
+                        if hovering, isEnabled(action) { highlightedAction = action }
+                        else if highlightedAction == action { highlightedAction = nil }
                     }
+                    .accessibilityIdentifier(action.accessibilityIdentifier)
                 }
-                .help(action.help)
-                .accessibilityIdentifier(action.accessibilityIdentifier)
             }
         }
         .padding(PasketShape.menuInset)
-        .frame(width: 208)
+        .frame(width: 280)
         .modifier(ClipboardMenuSurface())
         .focusable()
         .focusEffectDisabled()
         .focused($isFocused)
         .onAppear {
+            highlightedAction = defaultAction
             isFocused = true
         }
-        .onKeyPress(.downArrow) {
-            moveHighlight(by: 1)
-            return .handled
-        }
-        .onKeyPress(.upArrow) {
-            moveHighlight(by: -1)
-            return .handled
-        }
+        .onKeyPress(.downArrow) { moveHighlight(by: 1); return .handled }
+        .onKeyPress(.upArrow) { moveHighlight(by: -1); return .handled }
         .onKeyPress(.return) {
-            let action = highlightedAction ?? .settings
-            if enabledActions.contains(action) { onSelect(action) }
+            let action = highlightedAction ?? defaultAction
+            if isEnabled(action) { onSelect(action) }
             return .handled
         }
         .onExitCommand(perform: onDismiss)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("More actions")
-        .onChange(of: canClearHistory) {
+        .accessibilityLabel("Actions")
+        .onChange(of: enabledActions) {
             if let highlightedAction, !enabledActions.contains(highlightedAction) {
-                self.highlightedAction = .settings
+                self.highlightedAction = defaultAction
             }
+        }
+    }
+
+    private func isEnabled(_ action: Action) -> Bool {
+        switch action {
+        case .paste: canPaste
+        case .deleteSelected: canDeleteSelected
+        case .deleteUnavailableFiles, .clearHistory: canClearHistory
+        case .settings: true
+        }
+    }
+
+    private func title(for action: Action) -> String {
+        switch action {
+        case .paste: pasteTitle
+        case .deleteSelected: selectedCount > 1 ? "Delete \(selectedCount) Selected Items…" : "Delete Selected"
+        case .deleteUnavailableFiles: "Delete Unavailable Files"
+        case .clearHistory: "Delete All Entries…"
+        case .settings: "Settings…"
+        }
+    }
+
+    private func shortcut(for action: Action) -> String? {
+        switch action {
+        case .paste: "↵"
+        case .deleteSelected: deletionShortcut
+        case .settings: settingsShortcut
+        default: nil
         }
     }
 
