@@ -50,9 +50,21 @@ nonisolated struct ClipboardHistoryLayout {
         var itemEntries: [UUID: Int] = [:]
         var y = Self.inset
         var previousPeriod: ClipboardHistoryPeriod?
+        // Adjacent history rows usually fall on the same local calendar day.
+        var lastDay: (interval: DateInterval, period: ClipboardHistoryPeriod)?
+        func group(for reference: ClipboardHistoryReference) -> ClipboardHistoryPeriod {
+            if isSearch { return .searchResults }
+            if reference.isPinned { return .pinned }
+            let copiedAt = reference.copiedAt
+            if let lastDay, copiedAt >= lastDay.interval.start, copiedAt < lastDay.interval.end {
+                return lastDay.period
+            }
+            let period = ClipboardHistoryPeriod.period(for: copiedAt, at: date, calendar: calendar)
+            lastDay = calendar.dateInterval(of: .day, for: copiedAt).map { ($0, period) }
+            return period
+        }
         for (index, reference) in references.enumerated() {
-            let period: ClipboardHistoryPeriod = isSearch ? .searchResults
-                : reference.isPinned ? .pinned : .period(for: reference.copiedAt, at: date, calendar: calendar)
+            let period = group(for: reference)
             if period != previousPeriod {
                 let height = previousPeriod == nil ? Self.firstHeaderHeight : Self.headerHeight
                 entries.append(Entry(id: .header(period), itemIndex: nil, y: y, height: height))

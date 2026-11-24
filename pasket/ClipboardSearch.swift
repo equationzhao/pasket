@@ -31,10 +31,14 @@ nonisolated struct ClipboardSearch {
         var usesSubsequence = false
         var totalGap = 0
         var preparedFields: [SearchField]?
+        var foldedInitials: [Character: String] = [:]
         for token in tokens {
-            if fields.contains(where: { $0.localizedStandardContains(token.text) }) { continue }
+            // The whole-query check already ruled out the identical single token.
+            if token.text != query && fields.contains(where: { $0.localizedStandardContains(token.text) }) { continue }
             guard level != .literal else { return 0 }
-            let prepared = preparedFields ?? fields.map(SearchField.init)
+            let prepared = preparedFields ?? fields.map {
+                SearchField($0, level: level, foldedInitials: &foldedInitials)
+            }
             preparedFields = prepared
             if prepared.contains(where: { token.minimumGap(in: $0.initials, initials: true) != nil }) {
                 usesInitials = true
@@ -88,23 +92,35 @@ nonisolated struct ClipboardSearch {
         let text: [(character: Character, offset: Int)]
         let initials: [(character: Character, offset: Int)]
 
-        init(_ text: String) {
-            self.text = Array(ClipboardSearch.fold(text)).enumerated().map { ($0.element, $0.offset) }
+        init(_ text: String, level: Level, foldedInitials: inout [Character: String]) {
+            self.text = level == .fuzzy
+                ? Array(ClipboardSearch.fold(text)).enumerated().map { ($0.element, $0.offset) }
+                : []
             let characters = Array(text)
             var initials: [(character: Character, offset: Int)] = []
+            var afterSeparator = true
             for index in characters.indices {
                 let character = characters[index]
-                guard character.isLetter || character.isNumber else { continue }
-                let previous = index > 0 ? characters[index - 1] : nil
-                let next = index + 1 < characters.count ? characters[index + 1] : nil
-                let afterSeparator = previous.map { !$0.isLetter && !$0.isNumber } ?? true
-                // Recognize separators, camelCase, and acronym boundaries such as XMLParser.
-                let caseBoundary = character.isUppercase && (previous?.isLowercase == true
-                    || previous?.isNumber == true
-                    || (previous?.isUppercase == true && next?.isLowercase == true))
-                if afterSeparator || caseBoundary {
-                    initials.append(contentsOf: ClipboardSearch.fold(String(character)).map { ($0, index) })
+                // Inside a word these ASCII characters can never start a new initial.
+                if !afterSeparator, let ascii = character.asciiValue,
+                   (97...122).contains(ascii) || (48...57).contains(ascii) { continue }
+                guard character.isLetter || character.isNumber else {
+                    afterSeparator = true
+                    continue
                 }
+                if !afterSeparator {
+                    guard character.isUppercase else { continue }
+                    let previous = characters[index - 1]
+                    let acronymBoundary = previous.isUppercase && index + 1 < characters.count
+                        && characters[index + 1].isLowercase
+                    guard previous.isLowercase || previous.isNumber || acronymBoundary else { continue }
+                }
+                afterSeparator = false
+                let folded = foldedInitials[character] ?? ClipboardSearch.fold(String(character))
+                // Bound transient storage on diverse text; keep serving existing initials at capacity.
+                // 64 slots can hold the full ASCII alphanumeric alphabet or initials from any script.
+                if foldedInitials.count < 64 { foldedInitials[character] = folded }
+                initials.append(contentsOf: folded.map { ($0, index) })
             }
             self.initials = initials
         }
