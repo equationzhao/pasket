@@ -431,7 +431,8 @@ struct ClipboardTests {
         fixture.store.select(item.id)
         await fixture.store.copySelectedImageText()
         #expect(fixture.pasteboard.string(forType: .string) == "PAYMENT REFERENCE 4512")
-        #expect(fixture.store.toasts.current?.title == "Copied Text")
+        #expect(fixture.store.toasts.current?.title == "Copied Text",
+                "\(fixture.store.toasts.current?.message ?? "")")
         #expect(fixture.store.toasts.current?.duration == .seconds(1))
         fixture.store.pollClipboard()
         await fixture.store.flush()
