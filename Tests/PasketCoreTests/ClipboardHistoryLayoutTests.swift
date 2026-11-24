@@ -55,6 +55,29 @@ struct ClipboardHistoryLayoutTests {
             == layout.entry(for: references[0].id)?.y)
     }
 
+    @Test func dateHeadersMatchIndividualClassificationAcrossClockChanges() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+        for (month, day) in [(3, 9), (11, 2)] {
+            let now = try #require(calendar.date(from: DateComponents(year: 2026, month: month, day: day)))
+            let midnight = try #require(calendar.date(byAdding: .day, value: -1, to: now))
+            let offsets = [-1, 0, 7_200, 82_799, 82_800, 86_400, 89_999, 90_000, -86_400, -1, -604_800, -2_678_400, 0]
+            let refs = offsets.enumerated().map { index, offset in
+                ClipboardHistoryReference(id: UUID(), copiedAt: midnight.addingTimeInterval(Double(offset)),
+                                          isPinned: index == 3)
+            }
+            let layout = ClipboardHistoryLayout(refs, at: now, calendar: calendar)
+            var group: ClipboardHistoryPeriod?
+            for entry in layout.entries {
+                if case .header(let period) = entry.id { group = period }
+                if let index = entry.itemIndex {
+                    let ref = refs[index]
+                    #expect(group == (ref.isPinned ? .pinned : .period(for: ref.copiedAt, at: now, calendar: calendar)))
+                }
+            }
+        }
+    }
+
     @Test func cachedLayoutFollowsIndexRevisionAndGrouping() {
         let now = Date.now
         let first = ClipboardHistoryReference(id: UUID(), copiedAt: now)

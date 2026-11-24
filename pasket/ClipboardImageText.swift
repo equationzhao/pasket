@@ -12,6 +12,19 @@ nonisolated enum ClipboardImageText {
 
     @Sendable
     static func recognizeText(in data: Data, mode: Mode) async throws -> String {
+        do {
+            return try await performRecognition(in: data, mode: mode)
+        } catch {
+            try Task.checkCancellation()
+            let recognitionError = error as NSError
+            // Accurate OCR can fail in the system image reader on virtual Macs.
+            guard mode == .accurate, recognitionError.domain == "TextRecognition.CRImageReaderError",
+                  recognitionError.code == 9 else { throw error }
+            return try await performRecognition(in: data, mode: .fast)
+        }
+    }
+
+    private static func performRecognition(in data: Data, mode: Mode) async throws -> String {
         var request = RecognizeTextRequest()
         request.recognitionLevel = mode == .accurate ? .accurate : .fast
         request.automaticallyDetectsLanguage = true

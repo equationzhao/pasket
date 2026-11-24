@@ -3,6 +3,33 @@ import Testing
 @testable import PasketCore
 
 struct ClipboardSearchTests {
+    @Test func cancelledRankScanReleasesConnectionForNextQueryAndWrite() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let db = try ClipboardDatabase(url: url)
+        try db.execute("CREATE TABLE words (text TEXT)")
+        try db.execute("INSERT INTO words VALUES ('first'), ('second')")
+        try db.setSearch(ClipboardSearch("zzzzx", level: .fuzzy))
+        let ranked = "SELECT pasket_search_rank(text, '', '', '', '') FROM words"
+        let cancelled = Task { @MainActor in
+            var rows = 0
+            do {
+                try db.query(ranked) { _ in
+                    rows += 1
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return false
+            } catch is CancellationError {
+                return rows == 1
+            }
+        }
+        let interruptedAfterFirstRow = try await cancelled.value
+        #expect(interruptedAfterFirstRow)
+        try db.execute("INSERT INTO words VALUES ('zzzzx')")
+        try db.setSearch(ClipboardSearch("zzzzx", level: .literal))
+        #expect(try db.integer("SELECT count(*) FROM words WHERE pasket_search_rank(text, '', '', '', '') > 0") == 1)
+    }
+
     @Test(arguments: [
         ("hello world", "prefix HELLO WORLD suffix", true),
         ("hello world", "world before hello", true),
@@ -94,6 +121,26 @@ struct ClipboardSearchTests {
                      "04-keyboard-shortcuts.png", "05-appearance.png"]
         let body = names.map { "/Example/pasket/" + $0 }.joined(separator: "\n")
         #expect(ClipboardSearch("sk-internal").rank(fields: [body]) == 0)
+    }
+
+    @Test func diverseInitialsPreserveRanksInLaterFields() {
+        let prefix = (0..<70).map { String(UnicodeScalar(0x4e00 + $0)!) }.joined(separator: " ")
+        let fields = [prefix, "Résumé Builder", "中文 备忘"]
+        for query in ["rb", "中备"] {
+            #expect(ClipboardSearch(query, level: .literal).rank(fields: fields) == 0)
+            #expect(ClipboardSearch(query, level: .initials).rank(fields: fields) == 1)
+            #expect(ClipboardSearch(query, level: .fuzzy).rank(fields: fields) == 1)
+        }
+    }
+
+    @Test func mixedTokensKeepTheirRanksAcrossSearchLevels() {
+        let fields = ["XMLParser", "axbyc", "Éditeur"]
+        for query in ["xp abc editeur", "abc editeur xp", "abc xp abc editeur"] {
+            #expect(ClipboardSearch(query, level: .initials).rank(fields: fields) == 0)
+            #expect(ClipboardSearch(query, level: .fuzzy).rank(fields: fields) == 0.25)
+        }
+        #expect(ClipboardSearch("xp editeur", level: .initials).rank(fields: fields) == 1)
+        #expect(ClipboardSearch("xp editeur", level: .fuzzy).rank(fields: fields) == 1)
     }
 
     @Test func rejectsSparseInitialsAndLargeIndividualGaps() {
